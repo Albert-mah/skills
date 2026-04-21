@@ -307,6 +307,77 @@ section('normalize: apply defaults');
 }
 
 // ══════════════════════════════════════════════════════════════════
+// normalize: update-node assignFormSchema synthesis
+// ══════════════════════════════════════════════════════════════════
+section('normalize: update assignFormSchema auto-synth');
+{
+  const node = applyNodeDefaults({
+    type: 'update',
+    config: {
+      collection: 'nb_x',
+      params: {
+        filter: { $and: [{ id: { $eq: 'x' } }] },
+        values: { status: 'done', comment: 'ok' },
+      },
+    },
+  });
+  const c = node.config as Record<string, unknown>;
+  assert('usingAssignFormSchema set to true',
+    c.usingAssignFormSchema === true);
+  const schema = c.assignFormSchema as Record<string, unknown>;
+  assert('assignFormSchema x-component is Grid',
+    schema['x-component'] === 'Grid');
+  assert('schema has a single Grid.Row',
+    Object.values(schema.properties as Record<string, unknown>).some((r: any) => r['x-component'] === 'Grid.Row'));
+  // Walk to find AssignedField nodes
+  const fields: string[] = [];
+  const walk = (obj: unknown): void => {
+    if (!obj || typeof obj !== 'object') return;
+    const rec = obj as Record<string, unknown>;
+    if (rec['x-component'] === 'AssignedField' && typeof rec.name === 'string') fields.push(rec.name);
+    for (const v of Object.values(rec)) walk(v);
+  };
+  walk(schema);
+  assert('AssignedField per values key',
+    fields.length === 2 && fields.includes('status') && fields.includes('comment'));
+  assert('x-collection-field prefix uses collection',
+    JSON.stringify(schema).includes('nb_x.status'));
+}
+{
+  // User-provided assignFormSchema must survive unchanged
+  const userSchema = { marker: 'user', 'x-component': 'CustomForm' };
+  const node = applyNodeDefaults({
+    type: 'update',
+    config: {
+      collection: 'nb_x',
+      params: { values: { status: 'done' } },
+      assignFormSchema: userSchema,
+      usingAssignFormSchema: true,
+    },
+  });
+  assert('user-provided assignFormSchema wins',
+    (node.config as Record<string, unknown>).assignFormSchema === userSchema);
+}
+{
+  // Round-trip: apply + strip should drop the synthesized schema
+  const original: any = {
+    type: 'update',
+    config: {
+      collection: 'nb_x',
+      params: { filter: { $and: [] }, values: { status: 'done' } },
+    },
+  };
+  const applied = applyNodeDefaults(original);
+  const stripped = stripSpecDefaults(makeSpec({ nodes: { a: applied }, graph: ['a'] })).nodes.a;
+  assert('strip removes synthesized assignFormSchema',
+    !('assignFormSchema' in (stripped.config as Record<string, unknown>)));
+  assert('strip removes usingAssignFormSchema',
+    !('usingAssignFormSchema' in (stripped.config as Record<string, unknown>)));
+  assert('params.values preserved post-strip',
+    ((stripped.config as any).params.values.status) === 'done');
+}
+
+// ══════════════════════════════════════════════════════════════════
 // normalize: stripSpecDefaults (export direction)
 // ══════════════════════════════════════════════════════════════════
 section('normalize: strip defaults');

@@ -35,6 +35,9 @@ const NODE_CONFIG_DEFAULTS: Record<string, Record<string, unknown>> = {
   update: {
     dataSource: 'main',
     params: { individualHooks: false },
+    // assignFormSchema is synthesized by synthesizeUpdateAssignSchema after
+    // config merge — placing a placeholder here would collide with real
+    // user-provided schemas.
   },
   destroy: {
     dataSource: 'main',
@@ -113,7 +116,88 @@ export function applyNodeDefaults(node: NodeSpec): NodeSpec {
   if (!defaults) return node;
   // $ref configs: deployer resolves them separately, defaults apply post-resolve
   if (isPlainObject(node.config) && '$ref' in node.config) return node;
-  return { ...node, config: mergeConfig(defaults, node.config ?? {}) };
+  const merged = { ...node, config: mergeConfig(defaults, node.config ?? {}) };
+  // For update nodes, auto-synthesize assignFormSchema from params.values so
+  // the NB UI can render the values + filter editor. Runtime works without it
+  // (the backend reads params.values directly), but the UI is schema-driven.
+  if (node.type === 'update') {
+    synthesizeUpdateAssignSchema(merged);
+  }
+  return merged;
+}
+
+// ── UI schema synthesis for update nodes ──
+// NB's Update Record node UI reads `assignFormSchema` to render the values
+// editor. When users write only `params.values: { field: '...' }` we synthesise
+// a minimal Grid → Row → Col → AssignedField tree so the UI is coherent. If
+// the spec already includes assignFormSchema (e.g. pulled from NB) we leave
+// it alone.
+
+function randomUid(len = 11): string {
+  const chars = '0123456789abcdefghijklmnopqrstuvwxyz';
+  let out = '';
+  for (let i = 0; i < len; i++) out += chars[Math.floor(Math.random() * chars.length)];
+  return out;
+}
+
+function synthesizeUpdateAssignSchema(node: NodeSpec): void {
+  const config = node.config as Record<string, unknown>;
+  if (!config || 'assignFormSchema' in config) return;
+  const params = config.params as Record<string, unknown> | undefined;
+  const values = params?.values as Record<string, unknown> | undefined;
+  const collection = config.collection as string | undefined;
+  if (!values || !collection) return;
+  const fieldKeys = Object.keys(values);
+  if (!fieldKeys.length) return;
+
+  const rowUid = randomUid();
+  const properties: Record<string, unknown> = { name: rowUid };
+  // One Grid.Col per field — simple vertical stack is what NB's default
+  // layout produces.
+  for (const field of fieldKeys) {
+    const colUid = randomUid();
+    properties[colUid] = {
+      _isJSONSchemaObject: true,
+      version: '2.0',
+      type: 'void',
+      'x-component': 'Grid.Col',
+      properties: {
+        name: colUid,
+        [field]: {
+          _isJSONSchemaObject: true,
+          version: '2.0',
+          type: 'string',
+          name: field,
+          'x-toolbar': 'FormItemSchemaToolbar',
+          'x-settings': 'fieldSettings:FormItem',
+          'x-component': 'AssignedField',
+          'x-decorator': 'FormItem',
+          'x-collection-field': `${collection}.${field}`,
+          'x-component-props': { style: { width: '100%' } },
+        },
+      },
+    };
+  }
+
+  const gridUid = randomUid();
+  config.usingAssignFormSchema = true;
+  config.assignFormSchema = {
+    _isJSONSchemaObject: true,
+    version: '2.0',
+    name: gridUid,
+    type: 'void',
+    'x-component': 'Grid',
+    'x-initializer': 'assignFieldValuesForm:configureFields',
+    properties: {
+      [rowUid]: {
+        _isJSONSchemaObject: true,
+        version: '2.0',
+        type: 'void',
+        'x-component': 'Grid.Row',
+        properties,
+      },
+    },
+  };
 }
 
 // ── Strip defaults (used at export time) ──
@@ -183,5 +267,39 @@ export function stripNodeDefaults(node: NodeSpec): NodeSpec {
   if (!defaults || !node.config) return node;
   if (isPlainObject(node.config) && '$ref' in node.config) return node;
   const stripped = stripDefaultKeys(node.config as Record<string, unknown>, defaults);
+  // For update nodes, drop a synthesized-looking assignFormSchema so round-trip
+  // YAML stays minimal. Heuristic: if the schema only contains AssignedField
+  // entries matching params.values keys, it was auto-built.
+  if (node.type === 'update') {
+    maybeStripSynthesizedAssignSchema(stripped);
+  }
   return { ...node, config: stripped };
+}
+
+function maybeStripSynthesizedAssignSchema(config: Record<string, unknown>): void {
+  const schema = config.assignFormSchema as Record<string, unknown> | undefined;
+  const params = config.params as Record<string, unknown> | undefined;
+  const values = params?.values as Record<string, unknown> | undefined;
+  if (!schema || !values) return;
+  // Collect every AssignedField name in the tree.
+  const fields = new Set<string>();
+  const walk = (obj: unknown): void => {
+    if (!obj || typeof obj !== 'object') return;
+    if (Array.isArray(obj)) { for (const x of obj) walk(x); return; }
+    const rec = obj as Record<string, unknown>;
+    if (rec['x-component'] === 'AssignedField' && typeof rec.name === 'string') {
+      fields.add(rec.name);
+    }
+    for (const v of Object.values(rec)) walk(v);
+  };
+  walk(schema);
+  const valueKeys = new Set(Object.keys(values));
+  // Synthesized schemas are a 1-to-1 match with params.values keys. If user
+  // added extra logic (components, layouts, custom fields), leave it alone.
+  const sameShape =
+    fields.size === valueKeys.size && [...fields].every(f => valueKeys.has(f));
+  if (sameShape) {
+    delete config.assignFormSchema;
+    delete config.usingAssignFormSchema;
+  }
 }
