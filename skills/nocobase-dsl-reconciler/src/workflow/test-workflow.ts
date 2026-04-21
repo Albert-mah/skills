@@ -307,6 +307,33 @@ section('normalize: apply defaults');
 }
 
 // ══════════════════════════════════════════════════════════════════
+// normalize: create-node assignFormSchema auto-synth + non-value nodes
+// ══════════════════════════════════════════════════════════════════
+section('normalize: create also gets schema; query/destroy do NOT');
+{
+  const node = applyNodeDefaults({
+    type: 'create',
+    config: {
+      collection: 'nb_demo',
+      params: { values: { name: 'x', amount: 10 } },
+    },
+  });
+  const c = node.config as Record<string, unknown>;
+  assert('create node: usingAssignFormSchema=true',
+    c.usingAssignFormSchema === true);
+  assert('create node: has assignFormSchema', !!c.assignFormSchema);
+}
+for (const t of ['query', 'destroy']) {
+  const node = applyNodeDefaults({
+    type: t,
+    config: { collection: 'nb_demo', params: { filter: { $and: [] } } },
+  });
+  const c = node.config as Record<string, unknown>;
+  assert(`${t}: no synthesized schema (UI doesn't need it)`,
+    !('assignFormSchema' in c) && !('usingAssignFormSchema' in c));
+}
+
+// ══════════════════════════════════════════════════════════════════
 // normalize: update-node assignFormSchema synthesis
 // ══════════════════════════════════════════════════════════════════
 section('normalize: update assignFormSchema auto-synth');

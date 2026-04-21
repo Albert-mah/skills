@@ -111,27 +111,29 @@ export function applySpecDefaults(spec: WorkflowSpec): WorkflowSpec {
   return out;
 }
 
+// Node types whose NB UI is schema-driven: the editor reads assignFormSchema
+// to render both the values form and the filter's variable picker. Specs that
+// only set params.values deploy but show empty editors.
+const ASSIGN_FORM_SCHEMA_TYPES = new Set(['update', 'create']);
+
 export function applyNodeDefaults(node: NodeSpec): NodeSpec {
   const defaults = NODE_CONFIG_DEFAULTS[node.type];
   if (!defaults) return node;
   // $ref configs: deployer resolves them separately, defaults apply post-resolve
   if (isPlainObject(node.config) && '$ref' in node.config) return node;
   const merged = { ...node, config: mergeConfig(defaults, node.config ?? {}) };
-  // For update nodes, auto-synthesize assignFormSchema from params.values so
-  // the NB UI can render the values + filter editor. Runtime works without it
-  // (the backend reads params.values directly), but the UI is schema-driven.
-  if (node.type === 'update') {
-    synthesizeUpdateAssignSchema(merged);
+  if (ASSIGN_FORM_SCHEMA_TYPES.has(node.type)) {
+    synthesizeAssignSchema(merged);
   }
   return merged;
 }
 
-// ── UI schema synthesis for update nodes ──
-// NB's Update Record node UI reads `assignFormSchema` to render the values
-// editor. When users write only `params.values: { field: '...' }` we synthesise
-// a minimal Grid → Row → Col → AssignedField tree so the UI is coherent. If
-// the spec already includes assignFormSchema (e.g. pulled from NB) we leave
-// it alone.
+// ── UI schema synthesis for update + create nodes ──
+// Both UIs are schema-driven: they read `assignFormSchema` to render the
+// values editor AND the filter's variable picker. When users write only
+// `params.values: { field: '...' }` we synthesise a minimal
+// Grid → Row → Col → AssignedField tree so the UI is coherent. If the spec
+// already includes assignFormSchema (e.g. pulled from NB) we leave it alone.
 
 function randomUid(len = 11): string {
   const chars = '0123456789abcdefghijklmnopqrstuvwxyz';
@@ -140,7 +142,7 @@ function randomUid(len = 11): string {
   return out;
 }
 
-function synthesizeUpdateAssignSchema(node: NodeSpec): void {
+function synthesizeAssignSchema(node: NodeSpec): void {
   const config = node.config as Record<string, unknown>;
   if (!config || 'assignFormSchema' in config) return;
   const params = config.params as Record<string, unknown> | undefined;
@@ -267,10 +269,10 @@ export function stripNodeDefaults(node: NodeSpec): NodeSpec {
   if (!defaults || !node.config) return node;
   if (isPlainObject(node.config) && '$ref' in node.config) return node;
   const stripped = stripDefaultKeys(node.config as Record<string, unknown>, defaults);
-  // For update nodes, drop a synthesized-looking assignFormSchema so round-trip
-  // YAML stays minimal. Heuristic: if the schema only contains AssignedField
-  // entries matching params.values keys, it was auto-built.
-  if (node.type === 'update') {
+  // For update + create nodes, drop a synthesized-looking assignFormSchema so
+  // round-trip YAML stays minimal. Heuristic: if the schema only contains
+  // AssignedField entries matching params.values keys, it was auto-built.
+  if (ASSIGN_FORM_SCHEMA_TYPES.has(node.type)) {
     maybeStripSynthesizedAssignSchema(stripped);
   }
   return { ...node, config: stripped };
