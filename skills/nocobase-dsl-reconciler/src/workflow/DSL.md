@@ -59,7 +59,7 @@ passed through verbatim. `$ref` configs (large payloads factored out into
 | `aggregate` | `collection`, `params.filter`, `params.field`, `params.method` | Default: `dataSource: main`. |
 | `condition` | `calculation` | Default: `engine: basic`, `rejectOnFalse: false`. One `calculation.group` with `type: and\|or` and `calculations: [...]`. |
 | `multi-condition` | `branches` | Default: `engine: basic`. Each branch picks a downstream via its `branchIndex`. |
-| `calculation` | `expression`, `result` | Default: `engine: math.js`. Result name shows up as `{{$jobsMapByNodeKey.<name>.<result>}}`. |
+| `calculation` | `expression` | Default: `engine: math.js`. Returns the bare expression value; reference as `{{$jobsMapByNodeKey.<name>}}` with NO sub-path. |
 | `notification` | `channelName`, `title`, `content`, `receivers[].filter` | `receivers` is a list of `{filter: {$and: [...]}}` clauses resolved against `users`. |
 | `mailer` | `from`, `to`, `subject`, `html` | |
 | `request` | `url`, `method` | Optional `headers`, `data`, `params`, `timeout`. |
@@ -144,8 +144,31 @@ workflows/new_quotation/
 ```
 
 Pull captures these trees as-is; push upserts them preserving the UIDs, so a
-duplicated workspace carries its approval UIs with it. If you need to redesign
-an approval form, use `nocobase-ui-builder` on the live NB instance and pull.
+duplicated workspace carries its approval UIs with it.
+
+### Authoring new approval workflows
+
+**Approval nodes only run inside `type: approval` workflows** — not inside
+collection- or schedule-triggered ones. The approval plugin reads its
+"rounds" + applicant-form state from the trigger-level `approvalUid` tree,
+which only exists when the trigger type is `approval`. Putting an `approval`
+node in a `type: collection` workflow fails at runtime with
+`Cannot read properties of null (reading 'rounds')` — the validator now
+catches this pre-deploy.
+
+FlowModel UI trees are 1000+ lines of NB-specific x-component config and
+aren't realistically hand-authorable. To get a new approval workflow:
+
+1. **Clone an existing one** via `cli duplicate-project`. UIDs are
+   regenerated across the workspace, including ui/\* trees.
+2. **Author on NB UI, then pull.** Let a human (or `nocobase-ui-builder`)
+   design the applicant form + approver card through the live UI; `cli pull`
+   captures the trees into `ui/*.yaml` as a committable artefact.
+
+For a human-in-loop step that *doesn't* need the approval plugin (no
+delegate / withdraw / negotiation / record UI), use the `manual` node — it
+only needs `assignees` + a form reference and lives happily inside any
+trigger type.
 
 ## What the deployer fills in
 

@@ -31,6 +31,7 @@ nodes:
     config:
       method: POST
       url: https://erp.example.com/orders
+      contentType: application/json
       data:
         id: '{{$context.data.id}}'
         total: '{{$context.data.total}}'

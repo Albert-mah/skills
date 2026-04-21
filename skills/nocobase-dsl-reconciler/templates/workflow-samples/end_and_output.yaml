@@ -38,11 +38,13 @@ nodes:
   compute_score:
     type: calculation
     config:
+      engine: math.js
+      # Calculation returns the bare result — reference via
+      # {{$jobsMapByNodeKey.<node>}} without a sub-path.
       expression: '{{$jobsMapByNodeKey.load.stock}} * {{$jobsMapByNodeKey.load.price}}'
-      result: score
   return_score:
     # Exposes a value at $jobsMapByNodeKey.return_score so callers (e.g. a
     # parent subflow) can read it as the workflow's return value.
     type: output
     config:
-      value: '{{$jobsMapByNodeKey.compute_score.score}}'
+      value: '{{$jobsMapByNodeKey.compute_score}}'

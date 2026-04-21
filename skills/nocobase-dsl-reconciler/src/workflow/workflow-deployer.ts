@@ -491,15 +491,42 @@ async function deploySingleWorkflow(
       ?? (byTitle.length === 1 ? byTitle[0] : undefined);
 
     if (existingNode) {
-      // Update existing node config
-      await nb.http.post(`${nb.baseUrl}/api/flow_nodes:update`, {
-        config,
-        title: nodeSpec.title ?? name,
-      }, {
-        params: { filterByTk: existingNode.id },
-      });
-      nameToId.set(name, existingNode.id);
-      nameToKey.set(name, existingNode.key);
+      // Node `type` is immutable after creation in NB. If the DSL changed it,
+      // we must destroy + recreate — otherwise the old type silently keeps
+      // running with the new config shape (e.g. `sql` node receiving `create`
+      // node's `collection` + `params.values`).
+      if (existingNode.type !== nodeSpec.type) {
+        log(`    ~ ${name}: type changed ${existingNode.type} → ${nodeSpec.type}, recreating`);
+        await nb.http.post(`${nb.baseUrl}/api/flow_nodes:destroy`, {}, {
+          params: { filterByTk: existingNode.id, filter: { id: existingNode.id } },
+        });
+        const createBody: Record<string, unknown> = {
+          type: nodeSpec.type,
+          title: nodeSpec.title ?? name,
+          config,
+          workflowId,
+        };
+        if (upstreamId !== null) createBody.upstreamId = upstreamId;
+        if (branchIndex !== null) createBody.branchIndex = branchIndex;
+        const r = await nb.http.post(
+          `${nb.baseUrl}/api/workflows/${workflowId}/nodes:create`,
+          createBody,
+        );
+        const recreated = r.data?.data;
+        if (!recreated?.id) throw new Error(`Failed to recreate node "${name}"`);
+        nameToId.set(name, recreated.id);
+        nameToKey.set(name, recreated.key);
+      } else {
+        // Update existing node config
+        await nb.http.post(`${nb.baseUrl}/api/flow_nodes:update`, {
+          config,
+          title: nodeSpec.title ?? name,
+        }, {
+          params: { filterByTk: existingNode.id },
+        });
+        nameToId.set(name, existingNode.id);
+        nameToKey.set(name, existingNode.key);
+      }
     } else {
       // Create new node
       const createBody: Record<string, unknown> = {

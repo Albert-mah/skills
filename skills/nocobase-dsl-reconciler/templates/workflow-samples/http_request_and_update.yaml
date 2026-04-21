@@ -14,9 +14,10 @@ nodes:
     config:
       method: POST
       url: https://pricing.example.com/quote
+      contentType: application/json
       headers:
-        Content-Type: application/json
-        Authorization: 'Bearer {{$env.PRICING_API_TOKEN}}'
+        - name: Authorization
+          value: 'Bearer {{$env.PRICING_API_TOKEN}}'
       data:
         sku: '{{$context.data.sku}}'
         qty: '{{$context.data.qty}}'

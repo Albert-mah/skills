@@ -64,6 +64,16 @@ const BRANCHING_NODE_TYPES = new Set([
   'condition', 'multi-condition', 'loop', 'parallel', 'approval',
 ]);
 
+// Valid built-in `calculator` names for condition / multi-condition nodes.
+// Source: nocobase-workflow-manage/references/nodes/condition.md.
+const VALID_CALCULATORS = new Set([
+  'equal', 'notEqual',
+  'gt', 'gte', 'lt', 'lte',
+  'includes', 'notIncludes',
+  'startsWith', 'notStartsWith',
+  'endsWith', 'notEndsWith',
+]);
+
 // ── Variable extraction ──
 
 const VARIABLE_PATTERN = /\{\{([^}]+)\}\}/g;
@@ -287,6 +297,23 @@ export function validateWorkflow(
     validateGraphStructure(spec, issues);
   }
 
+  // ─── 5b. Approval-node / approval-trigger coherence ───
+  // Approval nodes need the trigger-level approval plugin state (rounds,
+  // applicant UI) which only exists when spec.type === 'approval'. In any
+  // other workflow type the runtime errors with "Cannot read properties of
+  // null (reading 'rounds')". Catch this pre-deploy.
+  if (spec.nodes && spec.type && spec.type !== 'approval') {
+    for (const [name, n] of Object.entries(spec.nodes)) {
+      if (n?.type === 'approval') {
+        issues.push({
+          level: 'error',
+          path: `nodes.${name}`,
+          message: `approval node "${name}" requires the workflow's trigger "type" to be "approval" (current: "${spec.type}"). Approval nodes read "rounds" + approver UI from the trigger-level approvalUid, which only exists in approval-triggered workflows. Either change spec.type to "approval" (and add approvalUid + taskCardUid + ui/*.yaml), or use a "manual" node for a lighter human-in-loop step.`,
+        });
+      }
+    }
+  }
+
   // ─── 6. Filter-root lint ───
   // NB filter/condition objects must root on $and or $or. Flat `{field: ...}`
   // at the root is a silent footgun — the server accepts it but semantics differ.
@@ -448,6 +475,52 @@ function validateNode(
 
     // Skip $ref configs (can't validate without resolving)
     if ('$ref' in config) return;
+
+    // Approval nodes only run inside approval-triggered workflows. In any
+    // other trigger type (`collection`, `schedule`, …), the approval plugin
+    // errors at runtime with "Cannot read properties of null (reading
+    // 'rounds')" because it expects the trigger-level approvalUid tree.
+    // The check happens in validateNode's caller (validateWorkflow) since
+    // we need access to spec.type; see the post-hoc pass below.
+
+    // condition / multi-condition: calculator names must be from the registered
+    // set. Common typos: greaterThan (→ gt), lessThan (→ lt).
+    if (nodeSpec.type === 'condition' || nodeSpec.type === 'multi-condition') {
+      const calcs: string[] = [];
+      const walkCalc = (obj: unknown): void => {
+        if (!obj || typeof obj !== 'object') return;
+        if (Array.isArray(obj)) { for (const x of obj) walkCalc(x); return; }
+        const rec = obj as Record<string, unknown>;
+        if (typeof rec.calculator === 'string') calcs.push(rec.calculator);
+        for (const v of Object.values(rec)) walkCalc(v);
+      };
+      walkCalc(config.calculation);
+      for (const c of calcs) {
+        if (!VALID_CALCULATORS.has(c)) {
+          issues.push({
+            level: 'error',
+            path: `${prefix}.config.calculation`,
+            message: `unknown calculator "${c}". Valid: ${[...VALID_CALCULATORS].join(', ')}. Common typos: greaterThan→gt, lessThan→lt.`,
+          });
+        }
+      }
+    }
+
+    // request node: headers + params are arrays of {name,value}, not objects.
+    // NB server 400s with "must be an array" if you give it an object —
+    // catch that at validate time instead.
+    if (nodeSpec.type === 'request') {
+      for (const k of ['headers', 'params'] as const) {
+        const v = config[k];
+        if (v !== undefined && !Array.isArray(v)) {
+          issues.push({
+            level: 'error',
+            path: `${prefix}.config.${k}`,
+            message: `${k} must be an array of {name, value} objects, got ${typeof v}. Example: ${k}: [ { name: Authorization, value: Bearer ... } ]`,
+          });
+        }
+      }
+    }
 
     // create/update/destroy/query must reference a collection
     if (COLLECTION_NODE_TYPES.has(nodeSpec.type)) {

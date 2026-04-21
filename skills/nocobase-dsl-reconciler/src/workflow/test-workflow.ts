@@ -102,6 +102,99 @@ section('validator: filter/condition root lint');
 }
 
 // ══════════════════════════════════════════════════════════════════
+// Validator — condition calculator names
+// ══════════════════════════════════════════════════════════════════
+section('validator: condition calculator names');
+{
+  const spec = makeSpec({
+    nodes: {
+      a: { type: 'condition', config: { calculation: { group: { type: 'and', calculations: [
+        { calculator: 'greaterThan', operands: [1, 0] },
+      ] } } } },
+    },
+    graph: ['a'],
+  });
+  const r = validateWorkflow(spec);
+  assert('unknown calculator "greaterThan" errors',
+    r.errors.some(e => e.level === 'error' && /unknown calculator "greaterThan"/.test(e.message)));
+}
+{
+  const spec = makeSpec({
+    nodes: {
+      a: { type: 'condition', config: { calculation: { group: { type: 'and', calculations: [
+        { calculator: 'gt', operands: [1, 0] },
+      ] } } } },
+    },
+    graph: ['a'],
+  });
+  const r = validateWorkflow(spec);
+  assert('known calculator "gt" passes',
+    !r.errors.some(e => /unknown calculator/.test(e.message)));
+}
+
+// ══════════════════════════════════════════════════════════════════
+// Validator — request node headers/params must be arrays
+// ══════════════════════════════════════════════════════════════════
+section('validator: request node array guards');
+{
+  const spec = makeSpec({
+    nodes: {
+      a: { type: 'request', config: { method: 'GET', url: 'https://x', params: { foo: 'bar' } } },
+    },
+    graph: ['a'],
+  });
+  const r = validateWorkflow(spec);
+  assert('request.params as object errors',
+    r.errors.some(e => e.level === 'error' && /params must be an array/.test(e.message)));
+}
+{
+  const spec = makeSpec({
+    nodes: {
+      a: { type: 'request', config: {
+        method: 'POST', url: 'https://x',
+        params: [{ name: 'q', value: 'x' }],
+        headers: [{ name: 'Authorization', value: 'Bearer ...' }],
+      } },
+    },
+    graph: ['a'],
+  });
+  const r = validateWorkflow(spec);
+  assert('request.params/headers as arrays pass',
+    !r.errors.some(e => e.level === 'error' && /must be an array/.test(e.message)));
+}
+
+// ══════════════════════════════════════════════════════════════════
+// Validator — approval-node / approval-trigger coherence
+// ══════════════════════════════════════════════════════════════════
+section('validator: approval node requires approval trigger');
+{
+  const spec = makeSpec({
+    type: 'collection',
+    trigger: { collection: 'nb_x', mode: 1 },
+    nodes: {
+      a: { type: 'approval', config: { branchMode: true, assignees: [1] } },
+    },
+    graph: ['a'],
+  });
+  const r = validateWorkflow(spec);
+  assert('approval node in collection-triggered workflow errors',
+    r.errors.some(e => e.level === 'error' && /requires the workflow.*type.*approval/.test(e.message)));
+}
+{
+  const spec = makeSpec({
+    type: 'approval',
+    trigger: { collection: 'nb_x', approvalUid: 'abc', taskCardUid: 'def' },
+    nodes: {
+      a: { type: 'approval', config: { branchMode: true, assignees: [1] } },
+    },
+    graph: ['a'],
+  });
+  const r = validateWorkflow(spec);
+  assert('approval node in approval-triggered workflow passes',
+    !r.errors.some(e => e.level === 'error' && /approval node/.test(e.message)));
+}
+
+// ══════════════════════════════════════════════════════════════════
 // Validator — graph (merge points + orphans)
 // ══════════════════════════════════════════════════════════════════
 section('validator: graph structure');
