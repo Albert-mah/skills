@@ -34,12 +34,14 @@ Collection targeting UX rule:
 
 - user may provide business-facing table names (for example, `orders`, `customers`, `invoice`)
 - do not force user to provide exact technical collection names
-- resolve actual collection names from the selected data source collection list
+- resolve actual collection names from collection metadata (`nb api resource list --resource collections --filter '{}' --appends fields -j`)
 - data source defaults to `main` unless user specifies another data source
+- scope defaults to `all` unless user explicitly requests `own` or `custom`
 - if resolution is ambiguous or empty, ask for clarification before write
 - when scope is `all` or `own`, resolve built-in scope id and write explicit action scope binding
 - do not keep `scopeId=null` when user selected `all` or `own`
 - before write, confirm data source + resolved collections + actions + scope
+- if scope is defaulted, confirmation must state `scope=all (default)` and allow user override
 
 ## MANDATORY: Field Configuration
 
@@ -48,8 +50,8 @@ Collection targeting UX rule:
 ### Before configuring independent permissions:
 
 1. **Fetch collection fields first**:
-   - prefer `roles_data_sources_collections_list` with `filter.dataSourceKey`
-   - fallback to `collections_fields_list` when needed
+   - use `nb api resource list --resource collections --filter '{}' --appends fields -j`
+   - optional: read `roles data-sources-collections list --role-name <role> --data-source-key <key> -j` for role-facing `usingConfig` evidence
 2. Identify which fields are:
    - Sensitive (financial, identity, approval status)
    - System fields (id, createdAt, updatedAt, createdBy, updatedBy)
@@ -58,9 +60,9 @@ Collection targeting UX rule:
 
 Runtime guard for metadata/read tools:
 
-- `roles_data_sources_collections_list` requires `filter.dataSourceKey`
-- `roles_data_source_resources_get` requires `filter.dataSourceKey` + `filter.name`
-- if server returns errors like `Cannot destructure property 'dataSourceKey'` or `Cannot read properties of undefined (reading 'dataSourceKey')`, fix argument shape and retry once
+- `roles_data_sources_collections_list` should use `--data-source-key`; `--filter` is compatibility-only and may return unstable payloads in some runtimes
+- `roles_data_source_resources_get` should use `--filter-by-tk <id>` or `--data-source-key <key> --name <collection>`
+- if server returns errors like `Cannot destructure property 'dataSourceKey'` or `Cannot read properties of undefined (reading 'dataSourceKey')`, switch to explicit locator flags and retry once
 
 ### Field configuration rules:
 
@@ -155,6 +157,7 @@ Operational default:
 
 - if user only provides collection + action + scope, do not block execution for missing field lists
 - apply full-field access as default and state this in the result
+- if user does not provide scope, apply `all` as default and state this in confirmation/result
 - for `view`, default to full-field visibility unless user explicitly restricts fields
 - implement full-field default as explicit field-name arrays resolved from collection metadata
 

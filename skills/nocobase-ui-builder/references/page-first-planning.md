@@ -11,7 +11,7 @@ description: 先确定页面骨架与 section，再为各 section 选择区块�
 
 构建普通系统页面时，先根据用户意图规划页面骨架和几个语义 section，再为每个 section 选择最合适的 block。不要先从“有哪些 block”出发，再强行拼成一个页面。
 
-`insight` 不是挂在页面尾部的附属区。命中 `总览 / 看板 / 趋势 / KPI / 交互说明` 时，`insight` 可以直接成为页面主 surface。
+`insight` 不是挂在页面尾部的附属区。命中 `总览 / 分析看板 / 趋势 / KPI / 交互说明` 时，`insight` 可以直接成为页面主 surface。遇到 `看板区块 / kanban / pipeline / 状态列 / 拖拽 / 泳道 / backlog` 这类明确 kanban cue 时，不要走 insight 优先，应把 `KanbanBlockModel` 当成 collection-bound 主 surface。
 
 ## 推荐骨架
 
@@ -46,8 +46,8 @@ description: 先确定页面骨架与 section，再为各 section 选择区块�
 
 常见映射：
 
-- `controls` -> `FilterFormBlockModel`
-- `primary` -> `TableBlockModel` / `DetailsBlockModel` / `CreateFormModel` / `EditFormModel`
+- `controls` -> `FilterFormBlockModel` only when the request explicitly asks for a filter/search block, form, or query area; otherwise controls may stay as actions on the data block
+- `primary` -> `TableBlockModel` / `DetailsBlockModel` / `CreateFormModel` / `EditFormModel` / `KanbanBlockModel`
 - `secondary` -> `TableBlockModel` / `DetailsBlockModel`
 - `insight` -> `ChartBlockModel` / `GridCardBlockModel` / `ListBlockModel` / `MapBlockModel`
 - `extension` -> `MarkdownBlockModel` / `JSBlockModel`
@@ -56,6 +56,7 @@ description: 先确定页面骨架与 section，再为各 section 选择区块�
 
 - 命中 `总览 / 趋势 / 分布 / 统计 / 占比 / dashboard` 时，优先 `ChartBlockModel`
 - 命中 `指标卡 / KPI / summary / overview` 且更像数字摘要时，优先 `GridCardBlockModel`
+- 命中 `看板区块 / kanban / pipeline / 状态列 / 拖拽 / 泳道 / backlog` 时，优先 `KanbanBlockModel`
 - 命中 `交互 / 联动 / 说明 / 引导 / 叙事 / 自定义` 时，允许 `JSBlockModel` 与 `ChartBlockModel / GridCardBlockModel` 并列，而不是自动退回 `Table/Details`
 
 ## 执行要求

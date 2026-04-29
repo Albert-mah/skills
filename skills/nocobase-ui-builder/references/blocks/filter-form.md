@@ -21,9 +21,13 @@ description: 筛选区块的适用范围、完成标准、whole-page 写法与�
 
 ## 何时使用
 
-- 用户明确要求“筛选 / 搜索 / 条件查询 / screening”
+- 用户明确要求“筛选区块 / 筛选表单 / 查询表单 / 搜索区块 / 搜索表单 / 条件查询区 / filter form / search block”
 - validation case 需要证明页面不是空壳，而是能命中真实数据
 - 页面主表已确定，需要一个稳定的筛选入口，而不是自由输入的表单壳
+
+如果用户说的是“树筛选 / 树状筛选 / 树形筛选区块 / tree filter”，这不是普通 `filterForm` 诉求，优先走 `TreeBlockModel`，见 [tree.md](tree.md)。不要因为短语里有“筛选区块”就先创建 `FilterFormBlockModel`。
+
+如果用户只是说“给表格/列表/Grid 增加筛选”或“增加筛选功能”，或者说“给表格/列表/Grid/卡片增加搜索功能”“支持搜索”“带搜索”“可搜索 / searchable”，默认先把它理解成数据区块上的 `filter` action，而不是新增 `FilterFormBlockModel`。像“搜索页 / 搜索结果页 / 搜索列表页”这样的页面级搜索表述，即使同句里再出现“支持搜索”，也不应仅因为出现了列表或卡片字样就升级成 filter intent。像“帮助中心页面，用列表展示帮助文档入口，并支持搜索”这种普通页面检索诉求，也不应仅因为同句出现 `列表` 就自动变成 data-block `filter` action。
 
 ## 写前必查
 
@@ -85,7 +89,8 @@ description: 筛选区块的适用范围、完成标准、whole-page 写法与�
 只有在以下情况才走低层路径：
 
 - 当前任务本来就是现有页面上的 localized live edit
-- 或者 public whole-page contract 已经被验证无法满足当前筛选需求
+- 或者 whole-page `applyBlueprint` 已经成功，但 live readback 暴露了明确的 residual local/live gap，需要对筛选区块做窄范围修补
+- 如果 whole-page `applyBlueprint` 在首次成功前失败，先根据错误修正 blueprint，重新跑 `prepare-write` 和 preview，并仅重试 blueprint 路径，最多 5 轮；这些 pre-success retries 期间不要切到低层写；5 轮仍失败再报告最新 blueprint / preview / error 证据
 
 低层默认写法：
 
@@ -128,6 +133,6 @@ description: 筛选区块的适用范围、完成标准、whole-page 写法与�
 ## 能力不足时如何降级
 
 - 如果某个复杂筛选项的字段渲染模型仍未消歧，优先保留简单且稳定的筛选项
-- 如果 single-shot whole-page 失败，先判断是 blueprint 生成错误还是 public contract 缺口，不要把 staged 低层写法当默认主流程
-- 只有在已验证的 `filterForm` contract gap 下，才把该筛选区块切到低层 `addBlock` / `addAction` / `addField`
+- 如果 single-shot whole-page 在首次成功前失败，先根据错误修正 blueprint，重新跑 `prepare-write` 和 preview，并仅重试 blueprint 路径，最多 5 轮；这些 pre-success retries 期间不要把 staged 低层写法当默认主流程或同阶段兜底；5 轮仍失败再报告最新 blueprint / preview / error 证据
+- 只有在 whole-page `applyBlueprint` 已成功且 readback 显示明确 residual local/live gap 时，才把该筛选区块切到窄范围低层 `addBlock` / `addAction` / `addField` 修补
 - 在 validation 场景里，如果最终无法命中样本数据，必须判为未完整通过

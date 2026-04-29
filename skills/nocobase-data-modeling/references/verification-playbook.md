@@ -22,11 +22,10 @@ Do not jump directly to relation details if the base collection shape is still w
 
 Prefer this sequence:
 
-1. `collections:get`
-2. `collections/{collectionName}/fields:list`
-3. `collections:listMeta` when available
+1. `nb api data-modeling collections get --filter-by-tk <collection> --appends fields -j`
+2. `nb api data-modeling collections fields list --collection-name <collection> -j` when you need a field-focused follow-up
 
-Use `collections:listMeta` when you need one read that includes collection options plus field definitions, but still verify field details explicitly if the mutation was high risk.
+Prefer `collections get --appends fields` as the main verification readback because it keeps the collection-level shape and field metadata together in one CLI path.
 
 Plugin-gated failure rule:
 
@@ -101,6 +100,7 @@ For each business field, verify:
 - validator props when needed
 - `defaultValue` when needed
 - `uiSchema.enum` for local choice fields
+- `uiSchema.enum[*].color` for local choice fields, and ensure each color stays in the supported palette
 
 Examples:
 
@@ -112,6 +112,7 @@ Failure patterns:
 
 - field exists but drifted to a weaker interface
 - enum field exists without enum options
+- enum option exists without color or with an unsupported color
 - multi-valued field exists without a stable empty-state default
 
 ## Relation checks

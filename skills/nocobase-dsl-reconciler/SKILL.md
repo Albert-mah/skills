@@ -58,7 +58,7 @@ Hand off to the matching skill when the user's request is orthogonal:
 | Collection / field / relation authoring outside a DSL project | `nocobase-data-modeling` |
 | Plugin development (`.tsx` components, server code) | `nocobase-plugin-development` |
 | Install / enable plugin | `nocobase-plugin-manage` |
-| Environment setup / app install / upgrade | `nocobase-env-bootstrap` |
+| Environment setup / app install / upgrade | `nocobase-env-manage` |
 
 Any change that should live as a committed YAML file under
 `workspaces/<project>/` — stays here.

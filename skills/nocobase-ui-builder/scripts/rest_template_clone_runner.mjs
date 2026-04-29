@@ -11,7 +11,7 @@ import {
 } from './menu_placement_runtime.mjs';
 import { reservePage } from './opaque_uid.mjs';
 import { resolveSessionPaths } from './session_state.mjs';
-import { remapTemplateTreeToTarget, summarizeModelTree } from './template_clone_helpers.mjs';
+import { remapTemplateTreeToTarget } from './template_clone_helpers.mjs';
 import { resolveFilterFieldModelSpec } from './filter_form_field_resolver.mjs';
 
 const PAGE_ROOT_USES = new Set(['RootPageModel', 'PageModel', 'ChildPageModel']);
@@ -600,20 +600,6 @@ async function fetchAnchorModel({ apiBase, token, parentId, subKey }) {
   });
   const url = `${apiBase}/api/flowModels:findOne?${params.toString()}`;
   return requestJson({ method: 'GET', url, token });
-}
-
-async function saveFlowModel({ apiBase, token, payload }) {
-  const params = new URLSearchParams({
-    return: 'model',
-    includeAsyncNode: 'true',
-  });
-  const url = `${apiBase}/api/flowModels:save?${params.toString()}`;
-  return requestJson({
-    method: 'POST',
-    url,
-    token,
-    body: payload,
-  });
 }
 
 async function fetchCollectionsMeta({ apiBase, token }) {
@@ -1988,24 +1974,6 @@ function reserveFreshPageTitle({
   throw new Error(`unable to reserve a fresh page title for "${normalizedTitle}"`);
 }
 
-function determineFinalStatus({
-  routeReady,
-  auditResult,
-  saveError,
-  readbackContractResult,
-}) {
-  if (!auditResult.ok) {
-    return 'failed';
-  }
-  if (saveError) {
-    return 'failed';
-  }
-  if (!routeReady.ok || !readbackContractResult.ok) {
-    return 'partial';
-  }
-  return 'success';
-}
-
 async function runBuild(flags) {
   const caseId = normalizeRequiredText(flags['case-id'], 'case id');
   const title = normalizeRequiredText(flags.title, 'title');
@@ -2259,7 +2227,7 @@ async function runBuild(flags) {
   if (remapHardStopIssues.length > 0 || auditHardStops.length > 0 || !auditResult.ok) {
     summary.status = 'failed';
     summary.guardBlocked = true;
-    summary.notes.push('guard 命中 blocker，本轮保留 page shell 与 artifact，但不执行 flowModels:save。');
+    summary.notes.push('guard 命中 blocker，本轮保留 page shell 与 artifact，但不执行 direct model write。');
     if (liveMetadataStep2.missingCollections.length > 0) {
       summary.notes.push(`live metadata 缺失 collection: ${liveMetadataStep2.missingCollections.join(', ')}`);
     }
@@ -2267,82 +2235,17 @@ async function runBuild(flags) {
     return summary;
   }
 
-  let saveResult = null;
-  let saveError = null;
-  try {
-    saveResult = await saveFlowModel({
-      apiBase,
-      token,
-      payload: canonicalizeResult.payload,
-    });
-    writeJson(path.join(outDir, 'save-result.json'), saveResult.raw);
-    summary.artifactPaths.saveResult = path.join(outDir, 'save-result.json');
-  } catch (error) {
-    saveError = {
-      message: error instanceof Error ? error.message : String(error),
-      status: Number.isInteger(error?.status) ? error.status : null,
-      response: error?.response ?? null,
-    };
-    writeJson(path.join(outDir, 'save-error.json'), saveError);
-    summary.artifactPaths.saveError = path.join(outDir, 'save-error.json');
-  }
-
-  let readbackResult = null;
-  let readbackContractResult = {
-    ok: false,
-    findings: [{
-      severity: 'blocker',
-      code: 'READBACK_SKIPPED',
-      message: 'save 失败，readback 已跳过',
-    }],
-    summary: {
-      topLevelUses: [],
-      visibleTabTitles: [],
-      filterManagerEntryCount: 0,
-    },
+  const saveError = {
+    message: 'Direct model writes are unsupported in nocobase-ui-builder; use flowSurfaces write APIs.',
+    status: null,
+    response: null,
   };
-  if (!saveError) {
-    readbackResult = await fetchAnchorModel({
-      apiBase,
-      token,
-      parentId: cloneTarget === 'page' ? schemaUid : `tabs-${schemaUid}`,
-      subKey: cloneTarget,
-    });
-    writeJson(path.join(outDir, 'readback.json'), readbackResult.raw);
-    summary.artifactPaths.readback = path.join(outDir, 'readback.json');
-    const effectiveReadbackContract = augmentReadbackContractWithGridMembership(
-      compileArtifact.readbackContract || {},
-      canonicalizeResult.payload,
-    );
-    writeJson(path.join(outDir, 'effective-readback-contract.json'), effectiveReadbackContract);
-    summary.artifactPaths.effectiveReadbackContract = path.join(outDir, 'effective-readback-contract.json');
-    readbackContractResult = validateReadbackContract(readbackResult.data, effectiveReadbackContract);
-    writeJson(path.join(outDir, 'readback-contract.json'), readbackContractResult);
-    summary.artifactPaths.readbackContract = path.join(outDir, 'readback-contract.json');
-  }
+  writeJson(path.join(outDir, 'save-error.json'), saveError);
+  summary.artifactPaths.saveError = path.join(outDir, 'save-error.json');
 
-  summary.readback = readbackResult
-    ? {
-      summary: summarizeModelTree(readbackResult.data),
-      contract: readbackContractResult,
-    }
-    : null;
-
-  summary.status = determineFinalStatus({
-    routeReady,
-    auditResult,
-    saveError,
-    readbackContractResult,
-  });
-  if (summary.status === 'partial') {
-    summary.notes.push('save/readback 已完成，但 build gate 尚未全部满足。');
-  }
-  if (saveError) {
-    summary.notes.push(`flowModels:save 失败: ${saveError.message}`);
-  }
-  if (!readbackContractResult.ok) {
-    summary.notes.push('readback contract 未全部通过。');
-  }
+  summary.readback = null;
+  summary.status = 'failed';
+  summary.notes.push(`direct model write blocked: ${saveError.message}`);
 
   writeJson(path.join(outDir, 'summary.json'), summary);
   return summary;
