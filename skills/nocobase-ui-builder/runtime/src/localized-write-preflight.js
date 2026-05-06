@@ -4,6 +4,35 @@ import {
   canonicalizePayload,
   extractRequiredMetadata,
 } from '../../scripts/flow_payload_guard.mjs';
+import { collectAssignValuesValidationIssues } from './assign-values-validation.js';
+import { resolveDefaultFilterMinimumCandidateFieldNames } from './default-filter-candidates.js';
+import {
+  isSortablePublicBlockType,
+  isSortablePublicLiveUse,
+  normalizeSortAliasInSettings,
+  settingsSortValuesMatch,
+} from './sorting-alias.js';
+import { collectPopupDocumentContractIssues } from './popup-contract.js';
+import { collectBuilderChartRelationFieldIssues } from './chart-query-validation.js';
+import {
+  buildPublicRelationFieldTitleFieldRequiredMessage,
+  buildPublicRelationFieldTitleFieldInvalidMessage,
+  buildPublicRelationFieldTitleFieldInvalidTargetMessage,
+  collectCalendarKanbanMainBlockSemanticIssues,
+  forEachBlockHiddenPopup,
+  getPublicBlockCollectionName,
+  getPublicBlockTypeFromLiveUse,
+  getPublicCollectionMeta,
+  getPublicRelationFieldObjectPath,
+  getPublicRelationFieldTitleFieldRequirement,
+  isPublicDataSurfaceBlockType,
+  isPublicAssociationFieldMeta,
+  PUBLIC_RELATION_FIELD_TITLE_FIELD_FORBIDDEN_RULE_ID,
+  PUBLIC_RELATION_FIELD_TITLE_FIELD_INVALID_RULE_ID,
+  PUBLIC_RELATION_FIELD_TITLE_FIELD_REQUIRED_RULE_ID,
+  resolvePublicFieldPathInCollectionMetadata,
+} from './public-block-contract.js';
+import { materializeDefaultTableRecordActions } from './table-record-actions-defaults.js';
 
 const LOCALIZED_WRITE_OPERATIONS = new Set(['add-block', 'add-blocks', 'compose', 'configure']);
 const INTERNAL_FIELD_OBJECT_KEYS = new Set([
@@ -17,7 +46,26 @@ const INTERNAL_FIELD_OBJECT_KEYS = new Set([
   'stepParams',
 ]);
 const TREE_CONNECT_TARGET_BLOCK_TYPES = new Set(['table', 'list', 'gridCard', 'calendar', 'kanban', 'details', 'chart', 'map', 'comments', 'tree']);
+const DISPLAY_ASSOCIATION_FIELD_POPUP_REQUIRED_BLOCK_TYPES = new Set(['table', 'list', 'gridCard', 'details']);
+const RELATION_FIELD_POPUP_CURRENT_RECORD_BLOCK_TYPES = new Set(['details', 'editForm']);
+const RELATION_FIELD_POPUP_ASSOCIATED_RECORDS_BLOCK_TYPES = new Set(['table', 'list', 'gridCard']);
 const TREE_LIVE_BLOCK_USES = new Set(['TreeBlockModel']);
+const CHART_PUBLIC_BLOCK_TYPES = new Set(['chart']);
+const GRID_CARD_PUBLIC_BLOCK_TYPES = new Set(['gridCard']);
+const GRID_CARD_LIVE_BLOCK_USES = new Set(['GridCardBlockModel']);
+const GRID_CARD_ALLOWED_SETTINGS_KEYS = new Set([
+  'title',
+  'description',
+  'height',
+  'heightMode',
+  'resource',
+  'columns',
+  'rowCount',
+  'dataScope',
+  'sort',
+  'sorting',
+  'layout',
+]);
 const TREE_CONNECT_TARGET_LIVE_USES = new Set([
   'TableBlockModel',
   'ListBlockModel',
@@ -30,6 +78,7 @@ const TREE_CONNECT_TARGET_LIVE_USES = new Set([
   'CommentsBlockModel',
   'TreeBlockModel',
 ]);
+const LIVE_UPDATE_ACTION_USES = new Set(['BulkUpdateActionModel', 'UpdateRecordActionModel']);
 const PUBLIC_MAIN_BLOCK_SECTION_RULES = {
   calendar: [
     {
@@ -66,7 +115,6 @@ const PUBLIC_MAIN_BLOCK_SECTION_RULES = {
     },
   ],
 };
-
 function normalizeText(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : '';
 }
@@ -90,6 +138,10 @@ function isObjectRecord(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+function ensureArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
 function addSpecifiedHeightMode(settings) {
   if (!isObjectRecord(settings) || !Object.hasOwn(settings, 'height') || Object.hasOwn(settings, 'heightMode')) {
     return settings;
@@ -100,55 +152,139 @@ function addSpecifiedHeightMode(settings) {
   };
 }
 
-function normalizeHeightSettingsInPopup(popup) {
+function normalizeWriteSettings(settings, { normalizeSortAlias = true } = {}) {
+  const sortNormalized = normalizeSortAlias ? normalizeSortAliasInSettings(settings) : settings;
+  return addSpecifiedHeightMode(sortNormalized);
+}
+
+function normalizeSortAliasInBlock(block) {
+  if (!isObjectRecord(block) || !isSortablePublicBlockType(block.type)) {
+    return block;
+  }
+  const settings = normalizeSortAliasInSettings(block.settings);
+  return settings === block.settings ? block : { ...block, settings };
+}
+
+function hasLocalizedResourceBinding(block) {
+  if (!isObjectRecord(block)) return false;
+  if (isObjectRecord(block.resource) && Object.keys(block.resource).length > 0) {
+    return true;
+  }
+  if (isObjectRecord(block.resourceInit) && Object.keys(block.resourceInit).length > 0) {
+    return true;
+  }
+  return Boolean(
+    normalizeText(block.collection)
+    || normalizeText(block.binding)
+    || normalizeText(block.dataSourceKey)
+    || normalizeText(block.associationPathName)
+    || normalizeText(block.associationField),
+  );
+}
+
+function normalizeHeightSettingsInPopup(popup, options = {}) {
   if (!isObjectRecord(popup) || !Array.isArray(popup.blocks)) {
     return popup;
   }
+  const associationRequirement = options.relationField
+    ? resolveAssociationFieldRequirement(options.metadata || {}, options.parentCollectionName, options.relationField)
+    : null;
+  const targetCollection = normalizeText(associationRequirement?.targetCollection);
   let changed = false;
   const blocks = popup.blocks.map((block) => {
-    const normalizedBlock = normalizeHeightSettingsInBlock(block);
+    let nextBlock = block;
+    const blockType = normalizeText(block?.type);
+    const binding = getNodeBinding(block);
+    const blockCollection = getBlockCollectionName(block);
+    if (
+      targetCollection
+      && RELATION_FIELD_POPUP_CURRENT_RECORD_BLOCK_TYPES.has(blockType)
+      && (!binding || binding === 'currentcollection')
+      && (!blockCollection || blockCollection === targetCollection)
+    ) {
+      nextBlock = normalizeRelationPopupCurrentRecordBlock(block, targetCollection);
+    }
+    const normalizedBlock = normalizeHeightSettingsInBlock(nextBlock, {
+      metadata: options.metadata,
+      parentCollectionName: getLocalizedBlockCollectionName(nextBlock, targetCollection || options.parentCollectionName),
+      relationField: '',
+    });
     if (normalizedBlock !== block) changed = true;
     return normalizedBlock;
   });
   return changed ? { ...popup, blocks } : popup;
 }
 
-function normalizeHeightSettingsInPopupItem(item) {
+function normalizeHeightSettingsInPopupItem(item, options = {}) {
   if (!isObjectRecord(item) || !isObjectRecord(item.popup)) {
     return item;
   }
-  const popup = normalizeHeightSettingsInPopup(item.popup);
+  const popup = normalizeHeightSettingsInPopup(item.popup, options);
   return popup === item.popup ? item : { ...item, popup };
 }
 
-function normalizeHeightSettingsInFieldGroup(group) {
+function normalizeHeightSettingsInFieldGroup(group, options = {}) {
   if (!isObjectRecord(group) || !Array.isArray(group.fields)) {
     return group;
   }
   let changed = false;
   const fields = group.fields.map((field) => {
-    const normalizedField = normalizeHeightSettingsInPopupItem(field);
+    const fieldOptions = {
+      metadata: options.metadata,
+      relationField: isObjectRecord(field) ? normalizeText(field.field) : '',
+      parentCollectionName: options.parentCollectionName,
+    };
+    const normalizedField = normalizeHeightSettingsInPopupItem(field, fieldOptions);
     if (normalizedField !== field) changed = true;
     return normalizedField;
   });
   return changed ? { ...group, fields } : group;
 }
 
-function normalizeHeightSettingsInBlock(block) {
+function normalizeHeightSettingsInBlock(block, options = {}) {
   if (!isObjectRecord(block)) {
     return block;
   }
 
-  let nextBlock = block;
-  const settings = addSpecifiedHeightMode(block.settings);
-  if (settings !== block.settings) {
+  const parentCollectionName = normalizeText(options.parentCollectionName);
+  const blockCollectionName = getLocalizedBlockCollectionName(block, parentCollectionName);
+  let nextBlock = normalizeSortAliasInBlock(block);
+  let settings = normalizeWriteSettings(nextBlock.settings, {
+    normalizeSortAlias:
+      typeof options.normalizeSortAliasInOwnSettings === 'boolean'
+        ? options.normalizeSortAliasInOwnSettings
+        : isSortablePublicBlockType(nextBlock.type),
+  });
+  let settingsChanged = settings !== nextBlock.settings;
+  if (isObjectRecord(settings)) {
+    let nextSettings = settings;
+    forEachBlockHiddenPopup(settings, nextBlock, (popup, { key }) => {
+      const normalizedPopup = normalizeHeightSettingsInPopup(popup, {
+        metadata: options.metadata,
+        parentCollectionName: blockCollectionName,
+        relationField: '',
+      });
+      if (normalizedPopup === popup) return;
+      if (nextSettings === settings) {
+        nextSettings = { ...settings };
+      }
+      nextSettings[key] = normalizedPopup;
+      settingsChanged = true;
+    });
+    settings = nextSettings;
+  }
+  if (settingsChanged) {
     nextBlock = { ...nextBlock, settings };
   }
 
   if (Array.isArray(block.blocks)) {
     let changed = false;
     const blocks = block.blocks.map((child) => {
-      const normalizedChild = normalizeHeightSettingsInBlock(child);
+      const normalizedChild = normalizeHeightSettingsInBlock(child, {
+        metadata: options.metadata,
+        parentCollectionName: blockCollectionName,
+        relationField: '',
+      });
       if (normalizedChild !== child) changed = true;
       return normalizedChild;
     });
@@ -156,7 +292,11 @@ function normalizeHeightSettingsInBlock(block) {
   }
 
   if (isObjectRecord(block.popup)) {
-    const popup = normalizeHeightSettingsInPopup(block.popup);
+    const popup = normalizeHeightSettingsInPopup(block.popup, {
+      metadata: options.metadata,
+      parentCollectionName: blockCollectionName,
+      relationField: '',
+    });
     if (popup !== block.popup) nextBlock = { ...nextBlock, popup };
   }
 
@@ -164,7 +304,12 @@ function normalizeHeightSettingsInBlock(block) {
     if (!Array.isArray(block[slot])) continue;
     let changed = false;
     const items = block[slot].map((item) => {
-      const normalizedItem = normalizeHeightSettingsInPopupItem(item);
+      const itemOptions = {
+        metadata: options.metadata,
+        parentCollectionName: blockCollectionName,
+        relationField: slot === 'fields' && isObjectRecord(item) ? normalizeText(item.field) : '',
+      };
+      const normalizedItem = normalizeHeightSettingsInPopupItem(item, itemOptions);
       if (normalizedItem !== item) changed = true;
       return normalizedItem;
     });
@@ -174,33 +319,50 @@ function normalizeHeightSettingsInBlock(block) {
   if (Array.isArray(block.fieldGroups)) {
     let changed = false;
     const fieldGroups = block.fieldGroups.map((group) => {
-      const normalizedGroup = normalizeHeightSettingsInFieldGroup(group);
+      const normalizedGroup = normalizeHeightSettingsInFieldGroup(group, {
+        metadata: options.metadata,
+        parentCollectionName: blockCollectionName,
+      });
       if (normalizedGroup !== group) changed = true;
       return normalizedGroup;
     });
     if (changed) nextBlock = { ...nextBlock, fieldGroups };
   }
 
-  return nextBlock;
+  return materializeDefaultTableRecordActions(nextBlock, {
+    hasExplicitResourceBinding: hasLocalizedResourceBinding(nextBlock),
+  });
 }
 
-function normalizeHeightSettingsForWrite(operation, payload) {
+function normalizeHeightSettingsForWrite(operation, payload, metadata = {}) {
   if (!isObjectRecord(payload)) return payload;
   if (operation === 'configure') {
     if (!isObjectRecord(payload.changes)) return payload;
-    const changes = addSpecifiedHeightMode(payload.changes);
+    const targetBlock = createConfigureTargetBlock(metadata, payload);
+    if (targetBlock) {
+      const normalizedTargetBlock = normalizeHeightSettingsInBlock(targetBlock, {
+        metadata,
+        normalizeSortAliasInOwnSettings: isSortablePublicLiveUse(getLiveEntryUse(getLiveTopologyEntry(metadata, payload?.target?.uid))),
+      });
+      const changes = createConfigureChangesFromTargetBlock(payload.changes, normalizedTargetBlock);
+      return changes === payload.changes ? payload : { ...payload, changes };
+    }
+    const targetEntry = getLiveTopologyEntry(metadata, payload?.target?.uid);
+    const changes = normalizeWriteSettings(payload.changes, {
+      normalizeSortAlias: isSortablePublicLiveUse(getLiveEntryUse(targetEntry)),
+    });
     return changes === payload.changes ? payload : { ...payload, changes };
   }
 
   if (operation === 'add-block') {
-    return normalizeHeightSettingsInBlock(payload);
+    return normalizeHeightSettingsInBlock(payload, { metadata });
   }
 
   if (operation === 'add-blocks' || operation === 'compose') {
     if (!Array.isArray(payload.blocks)) return payload;
     let changed = false;
     const blocks = payload.blocks.map((block) => {
-      const normalizedBlock = normalizeHeightSettingsInBlock(block);
+      const normalizedBlock = normalizeHeightSettingsInBlock(block, { metadata });
       if (normalizedBlock !== block) changed = true;
       return normalizedBlock;
     });
@@ -208,6 +370,380 @@ function normalizeHeightSettingsForWrite(operation, payload) {
   }
 
   return payload;
+}
+
+function collectChartDisplayTitleErrorsFromBlock(block, path) {
+  const errors = [];
+  if (!isObjectRecord(block)) {
+    return errors;
+  }
+  if (
+    CHART_PUBLIC_BLOCK_TYPES.has(normalizeText(block.type))
+    && isObjectRecord(block.settings)
+    && Object.hasOwn(block.settings, 'displayTitle')
+  ) {
+    errors.push({
+      path: `${path}.settings.displayTitle`,
+      ruleId: 'chart-display-title-unsupported',
+      message: 'Chart block settings do not support displayTitle in the current flowSurfaces runtime; keep settings.title and omit displayTitle.',
+      code: 'CHART_DISPLAY_TITLE_UNSUPPORTED',
+    });
+  }
+  forEachLocalizedChildBlockContainer(block, path, (blocks, blocksPath) => {
+    blocks.forEach((child, index) => {
+      collectChartDisplayTitleErrorsFromBlock(child, `${blocksPath}[${index}]`).forEach((issue) => errors.push(issue));
+    });
+  });
+  return errors;
+}
+
+function collectLocalizedChartDisplayTitleErrors(payload, operation, metadata = {}) {
+  const errors = [];
+  if (!isObjectRecord(payload)) {
+    return errors;
+  }
+  if (operation === 'configure') {
+    const context = createConfigureTargetBlockContext(metadata, payload);
+    if (context) {
+      if (context.block.type === 'chart' && Object.hasOwn(context.block.settings || {}, 'displayTitle')) {
+        errors.push({
+          path: `${context.path}.displayTitle`,
+          ruleId: 'chart-display-title-unsupported',
+          message: 'Chart block settings do not support displayTitle in the current flowSurfaces runtime; keep settings.title and omit displayTitle.',
+          code: 'CHART_DISPLAY_TITLE_UNSUPPORTED',
+        });
+      }
+      forEachConfigureTargetChildBlockContainer(context.block, context.path, (blocks, blocksPath) => {
+        blocks.forEach((child, index) => {
+          collectChartDisplayTitleErrorsFromBlock(child, `${blocksPath}[${index}]`).forEach((issue) => errors.push(issue));
+        });
+      });
+    }
+    return errors;
+  }
+  if (operation === 'add-block') {
+    return collectChartDisplayTitleErrorsFromBlock(payload, '$');
+  }
+  if (operation === 'add-blocks' || operation === 'compose') {
+    ensureArray(payload.blocks).forEach((block, index) => {
+      collectChartDisplayTitleErrorsFromBlock(block, `$.blocks[${index}]`).forEach((issue) => errors.push(issue));
+    });
+  }
+  return errors;
+}
+
+function collectChartBuilderRelationFieldErrorsFromSettings(settings, path) {
+  if (!isObjectRecord(settings?.query)) {
+    return [];
+  }
+  const mode = normalizeText(settings.query.mode || 'builder').toLowerCase();
+  if (mode && mode !== 'builder') {
+    return [];
+  }
+  return collectBuilderChartRelationFieldIssues(settings.query, `${path}.query`);
+}
+
+function collectChartBuilderRelationFieldErrorsFromBlock(block, path) {
+  const errors = [];
+  if (!isObjectRecord(block)) {
+    return errors;
+  }
+  if (CHART_PUBLIC_BLOCK_TYPES.has(normalizeText(block.type))) {
+    collectChartBuilderRelationFieldErrorsFromSettings(block.settings, `${path}.settings`).forEach((issue) => errors.push(issue));
+  }
+  forEachLocalizedChildBlockContainer(block, path, (blocks, blocksPath) => {
+    blocks.forEach((child, index) => {
+      collectChartBuilderRelationFieldErrorsFromBlock(child, `${blocksPath}[${index}]`).forEach((issue) => errors.push(issue));
+    });
+  });
+  return errors;
+}
+
+function collectLocalizedChartBuilderRelationFieldErrors(payload, operation, metadata = {}) {
+  const errors = [];
+  if (!isObjectRecord(payload)) {
+    return errors;
+  }
+  if (operation === 'configure') {
+    const context = createConfigureTargetBlockContext(metadata, payload);
+    if (context) {
+      if (context.block.type === 'chart') {
+        collectChartBuilderRelationFieldErrorsFromSettings(context.block.settings, context.path).forEach((issue) => errors.push(issue));
+      }
+      forEachConfigureTargetChildBlockContainer(context.block, context.path, (blocks, blocksPath) => {
+        blocks.forEach((child, index) => {
+          collectChartBuilderRelationFieldErrorsFromBlock(child, `${blocksPath}[${index}]`).forEach((issue) => errors.push(issue));
+        });
+      });
+    }
+    return errors;
+  }
+  if (operation === 'add-block') {
+    return collectChartBuilderRelationFieldErrorsFromBlock(payload, '$');
+  }
+  if (operation === 'add-blocks' || operation === 'compose') {
+    ensureArray(payload.blocks).forEach((block, index) => {
+      collectChartBuilderRelationFieldErrorsFromBlock(block, `$.blocks[${index}]`).forEach((issue) => errors.push(issue));
+    });
+  }
+  return errors;
+}
+
+function collectGridCardSettingsErrorsFromObject(settings, path) {
+  const errors = [];
+  if (!isObjectRecord(settings)) {
+    return errors;
+  }
+  for (const key of Object.keys(settings)) {
+    if (GRID_CARD_ALLOWED_SETTINGS_KEYS.has(key)) continue;
+    errors.push({
+      path: `${path}.${key}`,
+      ruleId: 'grid-card-settings-unsupported',
+      message: `gridCard settings only accepts keys: ${Array.from(GRID_CARD_ALLOWED_SETTINGS_KEYS).join(', ')}; unsupported key "${key}".`,
+      code: 'GRID_CARD_SETTINGS_UNSUPPORTED',
+      details: { key },
+    });
+  }
+  return errors;
+}
+
+function collectGridCardSettingsErrorsFromBlock(block, path) {
+  const errors = [];
+  if (!isObjectRecord(block)) {
+    return errors;
+  }
+  if (GRID_CARD_PUBLIC_BLOCK_TYPES.has(normalizeText(block.type))) {
+    collectGridCardSettingsErrorsFromObject(block.settings, `${path}.settings`).forEach((issue) => errors.push(issue));
+  }
+  forEachLocalizedChildBlockContainer(block, path, (blocks, blocksPath) => {
+    blocks.forEach((child, index) => {
+      collectGridCardSettingsErrorsFromBlock(child, `${blocksPath}[${index}]`).forEach((issue) => errors.push(issue));
+    });
+  });
+  return errors;
+}
+
+function collectLocalizedGridCardSettingsErrors(payload, operation, metadata = {}) {
+  const errors = [];
+  if (!isObjectRecord(payload)) {
+    return errors;
+  }
+  if (operation === 'configure') {
+    const targetEntry = getLiveTopologyEntry(metadata, payload?.target?.uid);
+    if (GRID_CARD_LIVE_BLOCK_USES.has(getLiveEntryUse(targetEntry))) {
+      collectGridCardSettingsErrorsFromObject(payload.changes, '$.changes').forEach((issue) => errors.push(issue));
+    }
+    return errors;
+  }
+  if (operation === 'add-block') {
+    return collectGridCardSettingsErrorsFromBlock(payload, '$');
+  }
+  if (operation === 'add-blocks' || operation === 'compose') {
+    ensureArray(payload.blocks).forEach((block, index) => {
+      collectGridCardSettingsErrorsFromBlock(block, `$.blocks[${index}]`).forEach((issue) => errors.push(issue));
+    });
+  }
+  return errors;
+}
+
+function collectLocalizedPublicDataSurfaceDefaultFilterErrors(payload, operation, metadata = {}) {
+  const errors = [];
+
+  const push = (path, ruleId, message, code, details = undefined) => {
+    errors.push({
+      path,
+      ruleId,
+      message,
+      code,
+      ...(details ? { details } : {}),
+    });
+  };
+
+  const getMinimumCandidateFieldNames = (block) => {
+    const collectionName = getBlockCollectionName(block);
+    const collectionMeta = getCollectionMeta(metadata, collectionName);
+    return collectionMeta ? resolveDefaultFilterMinimumCandidateFieldNames(collectionMeta) : [];
+  };
+
+  const validateDefaultFilterGroup = (defaultFilter, path, block) => {
+    if (defaultFilter === null || (isObjectRecord(defaultFilter) && Object.keys(defaultFilter).length === 0)) {
+      push(
+        path,
+        'public-data-surface-default-filter-empty',
+        'defaultFilter must include at least one concrete filter item; empty defaultFilter groups such as {}, null, or { logic, items: [] } are not allowed.',
+        'PUBLIC_DATA_SURFACE_DEFAULT_FILTER_EMPTY',
+      );
+      return;
+    }
+
+    if (!isObjectRecord(defaultFilter)) {
+      push(
+        path,
+        'public-data-surface-default-filter-required',
+        'defaultFilter must be one filter group object when provided.',
+        'PUBLIC_DATA_SURFACE_DEFAULT_FILTER_REQUIRED',
+      );
+      return;
+    }
+
+    const minimumCandidateFieldNames = getMinimumCandidateFieldNames(block);
+    const filterItemPaths = new Set();
+    let filterItemCount = 0;
+
+    const visitGroup = (group, groupPath) => {
+      const logic = normalizeText(group.logic);
+      if (!logic) {
+        push(
+          `${groupPath}.logic`,
+          'public-data-surface-default-filter-logic-required',
+          'defaultFilter.logic must be present.',
+          'PUBLIC_DATA_SURFACE_DEFAULT_FILTER_LOGIC_REQUIRED',
+        );
+      } else if (logic !== '$and' && logic !== '$or') {
+        push(
+          `${groupPath}.logic`,
+          'public-data-surface-default-filter-logic-invalid',
+          "defaultFilter.logic must be '$and' or '$or'.",
+          'PUBLIC_DATA_SURFACE_DEFAULT_FILTER_LOGIC_INVALID',
+        );
+      }
+
+      if (!Array.isArray(group.items)) {
+        push(
+          `${groupPath}.items`,
+          'public-data-surface-default-filter-items-required',
+          'defaultFilter.items must include an array of filter items.',
+          'PUBLIC_DATA_SURFACE_DEFAULT_FILTER_ITEMS_REQUIRED',
+        );
+        return;
+      }
+
+      for (const [index, item] of group.items.entries()) {
+        const itemPath = `${groupPath}.items[${index}]`;
+        if (!isObjectRecord(item)) {
+          push(
+            itemPath,
+            'public-data-surface-default-filter-item-invalid',
+            'Each defaultFilter.items entry must be one object.',
+            'PUBLIC_DATA_SURFACE_DEFAULT_FILTER_ITEM_INVALID',
+          );
+          continue;
+        }
+        if (Object.hasOwn(item, 'logic') || Object.hasOwn(item, 'items')) {
+          visitGroup(item, itemPath);
+          continue;
+        }
+
+        filterItemCount += 1;
+        const filterPath = normalizeText(item.path);
+        if (!filterPath) {
+          push(
+            `${itemPath}.path`,
+            'public-data-surface-default-filter-item-path-required',
+            'Each defaultFilter.items entry must include path.',
+            'PUBLIC_DATA_SURFACE_DEFAULT_FILTER_ITEM_PATH_REQUIRED',
+          );
+        } else {
+          filterItemPaths.add(filterPath);
+          const collectionName = getBlockCollectionName(block);
+          if (collectionName && getCollectionMeta(metadata, collectionName) && !resolveFieldPathInMetadata(metadata, collectionName, filterPath)) {
+            push(
+              `${itemPath}.path`,
+              'public-data-surface-default-filter-unknown-field',
+              `defaultFilter.items path "${filterPath}" is unsupported for collection ${collectionName}.`,
+              'PUBLIC_DATA_SURFACE_DEFAULT_FILTER_UNKNOWN_FIELD',
+              { collectionName, fieldPath: filterPath },
+            );
+          }
+        }
+
+        if (!normalizeText(item.operator)) {
+          push(
+            `${itemPath}.operator`,
+            'public-data-surface-default-filter-item-operator-required',
+            'Each defaultFilter.items entry must include operator.',
+            'PUBLIC_DATA_SURFACE_DEFAULT_FILTER_ITEM_OPERATOR_REQUIRED',
+          );
+        }
+      }
+    };
+
+    visitGroup(defaultFilter, path);
+
+    if (filterItemCount === 0) {
+      push(
+        `${path}.items`,
+        'public-data-surface-default-filter-empty',
+        'defaultFilter must include at least one concrete filter item; empty defaultFilter groups such as {}, null, or { logic, items: [] } are not allowed.',
+        'PUBLIC_DATA_SURFACE_DEFAULT_FILTER_EMPTY',
+      );
+      return;
+    }
+
+    const coveredCandidateFieldCount = minimumCandidateFieldNames.filter((fieldName) => filterItemPaths.has(fieldName)).length;
+    if (
+      minimumCandidateFieldNames.length > 0
+      && coveredCandidateFieldCount < minimumCandidateFieldNames.length
+    ) {
+      const collectionName = getBlockCollectionName(block);
+      push(
+        `${path}.items`,
+        'public-data-surface-default-filter-common-fields-incomplete',
+        `defaultFilter.items must cover at least ${minimumCandidateFieldNames.length} common business fields when available for collection ${collectionName}: ${minimumCandidateFieldNames.join(', ')}.`,
+        'PUBLIC_DATA_SURFACE_DEFAULT_FILTER_COMMON_FIELDS_INCOMPLETE',
+        {
+          collectionName,
+          minimumCandidateFieldNames,
+          coveredCandidateFieldCount,
+        },
+      );
+    }
+  };
+
+  const visitBlock = (block, path) => {
+    if (!isObjectRecord(block)) return;
+    if (isPublicDataSurfaceBlockType(block.type) && !block.template) {
+      if (!Object.hasOwn(block, 'defaultFilter')) {
+        push(
+          `${path}.defaultFilter`,
+          'public-data-surface-default-filter-required',
+          'Data-surface blocks of type table, list, gridCard, calendar, and kanban must include block-level defaultFilter.',
+          'PUBLIC_DATA_SURFACE_DEFAULT_FILTER_REQUIRED',
+        );
+      } else {
+        validateDefaultFilterGroup(block.defaultFilter, `${path}.defaultFilter`, block);
+      }
+    }
+    forEachLocalizedChildBlockContainer(block, path, (blocks, blocksPath) => {
+      blocks.forEach((child, index) => visitBlock(child, `${blocksPath}[${index}]`));
+    });
+  };
+
+  if (operation === 'add-block') {
+    visitBlock(payload, '$');
+    return errors;
+  }
+  if (operation === 'configure') {
+    const context = createConfigureTargetBlockContext(metadata, payload);
+    if (context) {
+      if (Object.hasOwn(payload?.changes || {}, 'defaultFilter')) {
+        const block = {
+          ...context.block,
+          defaultFilter: payload.changes.defaultFilter,
+        };
+        visitBlock(block, context.path);
+      } else {
+        forEachConfigureTargetChildBlockContainer(context.block, context.path, (blocks, blocksPath) => {
+          blocks.forEach((child, index) => visitBlock(child, `${blocksPath}[${index}]`));
+        });
+      }
+    }
+    return errors;
+  }
+  if (operation === 'add-blocks' || operation === 'compose') {
+    ensureArray(payload?.blocks).forEach((block, index) => visitBlock(block, `$.blocks[${index}]`));
+  }
+  return errors;
 }
 
 function normalizeMetadata(value) {
@@ -247,36 +783,7 @@ function normalizeCollectionField(field) {
 }
 
 function getCollectionMeta(metadata, collectionName) {
-  const normalizedCollectionName = normalizeText(collectionName);
-  if (!normalizedCollectionName) return null;
-  const rawCollections = metadata?.collections;
-  let rawCollection = null;
-  if (Array.isArray(rawCollections)) {
-    rawCollection = rawCollections.find((entry) => normalizeText(entry?.name || entry?.data?.name) === normalizedCollectionName) || null;
-  } else if (rawCollections && typeof rawCollections === 'object') {
-    rawCollection = rawCollections[normalizedCollectionName] || null;
-  }
-  const source = rawCollection?.data && typeof rawCollection.data === 'object' && !Array.isArray(rawCollection.data)
-    ? rawCollection.data
-    : rawCollection;
-  if (!source || typeof source !== 'object' || Array.isArray(source)) return null;
-  const options = source.options && typeof source.options === 'object' && !Array.isArray(source.options)
-    ? source.options
-    : {};
-  const values = source.values && typeof source.values === 'object' && !Array.isArray(source.values)
-    ? source.values
-    : {};
-  const fields = Array.isArray(source.fields) ? source.fields.map(normalizeCollectionField).filter(Boolean) : [];
-  return {
-    name: normalizedCollectionName,
-    titleField: normalizeText(source.titleField) || normalizeText(values.titleField) || normalizeText(options.titleField),
-    filterTargetKey:
-      normalizeFilterTargetKeyValue(source.filterTargetKey)
-      || normalizeFilterTargetKeyValue(values.filterTargetKey)
-      || normalizeFilterTargetKeyValue(options.filterTargetKey),
-    fields,
-    fieldsByName: new Map(fields.map((field) => [field.name, field])),
-  };
+  return getPublicCollectionMeta(metadata, collectionName);
 }
 
 function getCollectionFilterTargetKey(collectionMeta) {
@@ -291,25 +798,12 @@ function isAssociationField(field) {
   );
 }
 
+function getDefaultsAssociationFieldKey(associationField) {
+  return normalizeText(associationField).split('.')[0] || '';
+}
+
 function resolveFieldPathInMetadata(metadata, collectionName, fieldPath) {
-  const segments = normalizeText(fieldPath).split('.').filter(Boolean);
-  let currentCollectionName = normalizeText(collectionName);
-  let field = null;
-  if (!currentCollectionName || segments.length === 0) return null;
-  for (const [index, segment] of segments.entries()) {
-    const collectionMeta = getCollectionMeta(metadata, currentCollectionName);
-    if (!collectionMeta) return null;
-    field = collectionMeta.fieldsByName.get(segment) || null;
-    if (!field) return null;
-    if (index < segments.length - 1) {
-      if (!isAssociationField(field) || !normalizeText(field.target)) return null;
-      currentCollectionName = normalizeText(field.target);
-    }
-  }
-  return {
-    collectionName: normalizeText(field?.target || currentCollectionName),
-    field,
-  };
+  return resolvePublicFieldPathInCollectionMetadata(metadata, collectionName, fieldPath);
 }
 
 function resolveCollectionFilterTargetField(metadata, collectionName) {
@@ -392,6 +886,15 @@ function getLiveEntryCollectionName(entry) {
   );
 }
 
+function getLiveEntryParentUid(entry) {
+  return (
+    normalizeText(entry?.parentUid)
+    || normalizeText(entry?.parentId)
+    || normalizeText(entry?.parent?.uid)
+    || normalizeText(entry?.parent?.id)
+  );
+}
+
 function getLiveEntryTitleField(entry) {
   return (
     normalizeText(entry?.titleField)
@@ -404,31 +907,62 @@ function getLiveEntryUse(entry) {
   return normalizeText(entry?.use) || normalizeText(entry?.type) || normalizeText(entry?.model);
 }
 
-function getBlockCollectionName(block) {
-  return (
-    normalizeText(block?.collection)
-    || normalizeText(block?.resource?.collectionName)
-    || normalizeText(block?.resource?.collection)
-    || normalizeText(block?.resourceInit?.collectionName)
-    || normalizeText(block?.resourceInit?.collection)
-  );
+function createConfigureTargetBlock(metadata, payload) {
+  const targetEntry = getLiveTopologyEntry(metadata, payload?.target?.uid);
+  const liveUse = getLiveEntryUse(targetEntry);
+  const type = getPublicBlockTypeFromLiveUse(liveUse);
+  if (!targetEntry || !type) {
+    return null;
+  }
+  return {
+    type,
+    collection: getLiveEntryCollectionName(targetEntry),
+    settings: isObjectRecord(payload?.changes) ? payload.changes : {},
+    defaultFilter: Object.hasOwn(payload?.changes || {}, 'defaultFilter') ? payload.changes.defaultFilter : undefined,
+    blocks: Array.isArray(payload?.changes?.blocks) ? payload.changes.blocks : undefined,
+    popup: isObjectRecord(payload?.changes?.popup) ? payload.changes.popup : undefined,
+    actions: Array.isArray(payload?.changes?.actions) ? payload.changes.actions : undefined,
+    fields: Array.isArray(payload?.changes?.fields) ? payload.changes.fields : undefined,
+    fieldGroups: Array.isArray(payload?.changes?.fieldGroups) ? payload.changes.fieldGroups : undefined,
+    recordActions: Array.isArray(payload?.changes?.recordActions) ? payload.changes.recordActions : undefined,
+    ...(typeof payload?.changes?.fieldsLayout !== 'undefined' ? { fieldsLayout: payload.changes.fieldsLayout } : {}),
+  };
 }
 
-function getBlockTitleField(block) {
-  return normalizeText(block?.settings?.titleField) || normalizeText(block?.settings?.fieldNames?.title);
+function createConfigureChangesFromTargetBlock(originalChanges, block) {
+  if (!isObjectRecord(originalChanges)) {
+    return originalChanges;
+  }
+  if (!isObjectRecord(block)) {
+    return originalChanges;
+  }
+
+  let nextChanges = isObjectRecord(block.settings) ? block.settings : originalChanges;
+  let changed = nextChanges !== originalChanges;
+  const assign = (key, value) => {
+    if (typeof value === 'undefined') return;
+    if (nextChanges === originalChanges || nextChanges === block.settings) {
+      nextChanges = { ...nextChanges };
+    }
+    nextChanges[key] = value;
+    changed = true;
+  };
+
+  assign('defaultFilter', block.defaultFilter);
+  assign('blocks', block.blocks);
+  assign('popup', block.popup);
+  assign('actions', block.actions);
+  assign('fields', block.fields);
+  assign('fieldGroups', block.fieldGroups);
+  assign('recordActions', block.recordActions);
+  if (typeof block.fieldsLayout !== 'undefined') {
+    assign('fieldsLayout', block.fieldsLayout);
+  }
+
+  return changed ? nextChanges : originalChanges;
 }
 
-function collectBlocksByKey(blocks) {
-  const map = new Map();
-  if (!Array.isArray(blocks)) return map;
-  blocks.forEach((block) => {
-    const key = normalizeText(block?.key);
-    if (key) map.set(key, block);
-  });
-  return map;
-}
-
-function forEachLocalizedChildBlockContainer(block, path, visitContainer) {
+function forEachBlockChildBlockContainer(block, path, visitContainer, { directSettingsPath = false } = {}) {
   if (!isObjectRecord(block)) return;
 
   if (Array.isArray(block.blocks)) {
@@ -437,6 +971,12 @@ function forEachLocalizedChildBlockContainer(block, path, visitContainer) {
   if (Array.isArray(block.popup?.blocks)) {
     visitContainer(block.popup.blocks, `${path}.popup.blocks`);
   }
+  forEachBlockHiddenPopup(block.settings, block, (popup, { key }) => {
+    if (Array.isArray(popup?.blocks)) {
+      const popupBlocksPath = directSettingsPath ? `${path}.${key}.blocks` : `${path}.settings.${key}.blocks`;
+      visitContainer(popup.blocks, popupBlocksPath);
+    }
+  });
 
   for (const slot of ['actions', 'recordActions', 'fields']) {
     if (!Array.isArray(block[slot])) continue;
@@ -457,6 +997,161 @@ function forEachLocalizedChildBlockContainer(block, path, visitContainer) {
       });
     });
   }
+}
+
+function createConfigureTargetBlockContext(metadata, payload) {
+  const block = createConfigureTargetBlock(metadata, payload);
+  if (!block) return null;
+  return {
+    block,
+    path: '$.changes',
+    liveUse: getLiveEntryUse(getLiveTopologyEntry(metadata, payload?.target?.uid)),
+  };
+}
+
+function forEachConfigureTargetChildBlockContainer(block, path, visitContainer) {
+  forEachBlockChildBlockContainer(block, path, visitContainer, { directSettingsPath: true });
+}
+
+function getBlockCollectionName(block) {
+  return getPublicBlockCollectionName(block);
+}
+
+function getNodeBinding(node) {
+  return normalizeText(
+    node?.binding
+    || node?.resource?.binding
+    || node?.resource?.resourceBinding,
+  ).toLowerCase();
+}
+
+function getNodeAssociationField(node) {
+  return normalizeText(
+    node?.associationField
+    || node?.associationPathName
+    || node?.resource?.associationField
+    || node?.resource?.associationPathName,
+  );
+}
+
+function getLocalizedBlockCollectionName(block, parentCollectionName = '') {
+  return getBlockCollectionName(block) || normalizeText(parentCollectionName);
+}
+
+function getLocalizedTraversalSurfaceCollection(context) {
+  return normalizeText(context?.surfaceCollection || context?.currentCollection);
+}
+
+function resolveAssociationFieldRequirement(metadata, sourceCollectionName, fieldPath) {
+  const canonicalAssociationField = getDefaultsAssociationFieldKey(fieldPath);
+  if (!sourceCollectionName || !canonicalAssociationField) return null;
+  const resolved = resolveFieldPathInMetadata(metadata, sourceCollectionName, canonicalAssociationField);
+  if (!isAssociationField(resolved?.field)) return null;
+  const targetCollection = normalizeText(resolved?.field?.target);
+  if (!targetCollection) return null;
+  return {
+    associationField: canonicalAssociationField,
+    targetCollection,
+  };
+}
+
+function resolveAssociationFieldMetadata(metadata, sourceCollectionName, fieldPath) {
+  const canonicalAssociationField = getDefaultsAssociationFieldKey(fieldPath);
+  if (!sourceCollectionName || !canonicalAssociationField) return null;
+  const resolved = resolveFieldPathInMetadata(metadata, sourceCollectionName, canonicalAssociationField);
+  if (!isAssociationField(resolved?.field)) return null;
+  return {
+    associationField: canonicalAssociationField,
+    targetCollection: normalizeText(resolved?.field?.target),
+  };
+}
+
+function buildLocalizedBlockTraversalContext(block, parentContext, metadata) {
+  const binding = getNodeBinding(block);
+  const directCollection = getBlockCollectionName(block);
+  const inheritedSurfaceCollection = getLocalizedTraversalSurfaceCollection(parentContext);
+  const normalizedDirectCollection = normalizeText(directCollection);
+  let surfaceCollection = normalizedDirectCollection || inheritedSurfaceCollection;
+  let associationRequirement = null;
+
+  if (binding === 'associatedrecords') {
+    associationRequirement = resolveAssociationFieldRequirement(
+      metadata,
+      inheritedSurfaceCollection,
+      getNodeAssociationField(block),
+    );
+    surfaceCollection = normalizedDirectCollection || associationRequirement?.targetCollection || '';
+  } else if (binding === 'currentrecord' && normalizedDirectCollection) {
+    surfaceCollection = normalizedDirectCollection;
+  }
+
+  return {
+    surfaceCollection,
+    associationRequirement,
+    binding,
+  };
+}
+
+function getLocalizedFieldPopupSurfaceContext(metadata, blockContext, fieldPath = '') {
+  const associationRequirement = resolveAssociationFieldRequirement(
+    metadata,
+    getLocalizedTraversalSurfaceCollection(blockContext),
+    fieldPath,
+  );
+  return {
+    surfaceCollection: associationRequirement?.targetCollection || getLocalizedTraversalSurfaceCollection(blockContext),
+  };
+}
+
+function normalizeRelationPopupCurrentRecordBlock(block, targetCollection) {
+  const blockResource = isObjectRecord(block.resource) ? block.resource : null;
+  if (!blockResource && Object.hasOwn(block, 'binding')) {
+    return {
+      ...block,
+      binding: 'currentRecord',
+    };
+  }
+  const resource = {
+    ...(blockResource || {}),
+    binding: 'currentRecord',
+  };
+  if (targetCollection && !normalizeText(resource.collectionName) && !normalizeText(block.collection)) {
+    resource.collectionName = targetCollection;
+  }
+  return {
+    ...block,
+    resource,
+  };
+}
+
+function getActionType(item) {
+  return typeof item === 'string'
+    ? normalizeText(item).toLowerCase()
+    : isObjectRecord(item)
+      ? normalizeText(item.type).toLowerCase()
+      : '';
+}
+
+function hasAssignValues(item) {
+  return isObjectRecord(item?.settings) && Object.hasOwn(item.settings, 'assignValues');
+}
+
+function getBlockTitleField(block) {
+  return normalizeText(block?.settings?.titleField) || normalizeText(block?.settings?.fieldNames?.title);
+}
+
+function collectBlocksByKey(blocks) {
+  const map = new Map();
+  if (!Array.isArray(blocks)) return map;
+  blocks.forEach((block) => {
+    const key = normalizeText(block?.key);
+    if (key) map.set(key, block);
+  });
+  return map;
+}
+
+function forEachLocalizedChildBlockContainer(block, path, visitContainer) {
+  forEachBlockChildBlockContainer(block, path, visitContainer);
 }
 
 function pushUniqueRef(refs, seen, { collectionName, path, reason }) {
@@ -556,7 +1251,7 @@ function summarizeCollectionRefs(requiredMetadata) {
   return uniqueNames.sort();
 }
 
-function collectLocalizedCollectionRefs(payload) {
+function collectLocalizedCollectionRefs(payload, operation, metadata) {
   const refs = [];
   const seen = new Set();
 
@@ -577,6 +1272,7 @@ function collectLocalizedCollectionRefs(payload) {
     if (!block || typeof block !== 'object' || Array.isArray(block)) {
       return;
     }
+    push(block?.collection, `${path}.resource.collectionName`);
     push(block?.resource?.collectionName, `${path}.resource.collectionName`);
     push(block?.resourceInit?.collectionName, `${path}.resourceInit.collectionName`);
     forEachLocalizedChildBlockContainer(block, path, (blocks, blocksPath) => {
@@ -590,6 +1286,90 @@ function collectLocalizedCollectionRefs(payload) {
     visitBlock(payload, '$');
   }
 
+  if (operation === 'configure') {
+    const context = createConfigureTargetBlockContext(metadata, payload);
+    if (context) {
+      const collectionName = getBlockCollectionName(context.block);
+      if (collectionName) {
+        push(collectionName, '$.target.uid');
+      }
+      forEachConfigureTargetChildBlockContainer(context.block, context.path, (blocks, blocksPath) => {
+        blocks.forEach((child, index) => visitBlock(child, `${blocksPath}[${index}]`));
+      });
+    }
+  }
+
+  return refs;
+}
+
+function collectLocalizedAssignValuesCollectionRefs(payload, operation, metadata) {
+  const refs = [];
+  const seen = new Set();
+  const push = (collectionName, path) => pushUniqueRef(refs, seen, {
+    collectionName,
+    path,
+    reason: 'assign-values',
+  });
+
+  const visitActions = (items, path, collectionName) => {
+    if (!Array.isArray(items)) return;
+    items.forEach((item, index) => {
+      if (hasAssignValues(item)) {
+        push(collectionName, `${path}[${index}].settings.assignValues`);
+      }
+      if (Array.isArray(item?.popup?.blocks)) {
+        item.popup.blocks.forEach((block, blockIndex) => visitBlock(
+          block,
+          `${path}[${index}].popup.blocks[${blockIndex}]`,
+          collectionName,
+        ));
+      }
+    });
+  };
+
+  const visitFieldPopups = (items, path, collectionName) => {
+    if (!Array.isArray(items)) return;
+    items.forEach((item, index) => {
+      if (Array.isArray(item?.popup?.blocks)) {
+        item.popup.blocks.forEach((block, blockIndex) => visitBlock(
+          block,
+          `${path}[${index}].popup.blocks[${blockIndex}]`,
+          collectionName,
+        ));
+      }
+    });
+  };
+
+  const visitBlock = (block, path, parentCollectionName = '') => {
+    if (!isObjectRecord(block)) return;
+    const collectionName = getLocalizedBlockCollectionName(block, parentCollectionName);
+    visitActions(block.actions, `${path}.actions`, collectionName);
+    visitActions(block.recordActions, `${path}.recordActions`, collectionName);
+    visitFieldPopups(block.fields, `${path}.fields`, collectionName);
+    if (Array.isArray(block.fieldGroups)) {
+      block.fieldGroups.forEach((group, groupIndex) => {
+        visitFieldPopups(group?.fields, `${path}.fieldGroups[${groupIndex}].fields`, collectionName);
+      });
+    }
+    forEachLocalizedChildBlockContainer(block, path, (blocks, blocksPath) => {
+      blocks.forEach((child, index) => visitBlock(child, `${blocksPath}[${index}]`, collectionName));
+    });
+  };
+
+  if (Array.isArray(payload?.blocks)) {
+    payload.blocks.forEach((block, index) => visitBlock(block, `$.blocks[${index}]`));
+  } else {
+    visitBlock(payload, '$');
+  }
+
+  if (operation === 'configure' && Object.hasOwn(payload?.changes || {}, 'assignValues')) {
+    const targetEntry = getLiveTopologyEntry(metadata, payload?.target?.uid);
+    const targetCollection = getLiveEntryCollectionName(targetEntry);
+    const parentCollection = targetCollection
+      || getLiveEntryCollectionName(getLiveTopologyEntry(metadata, getLiveEntryParentUid(targetEntry)));
+    push(parentCollection, '$.changes.assignValues');
+  }
+
   return refs;
 }
 
@@ -597,7 +1377,7 @@ function summarizeSurfaceFacts(payload) {
   const blockTypes = [];
   const directBlockTypes = [];
 
-  const visitBlock = (block) => {
+  const visitBlock = (block, path = '$') => {
     if (!block || typeof block !== 'object' || Array.isArray(block)) {
       return;
     }
@@ -608,29 +1388,23 @@ function summarizeSurfaceFacts(payload) {
         directBlockTypes.push(type);
       }
     }
-    if (Array.isArray(block.blocks)) {
-      block.blocks.forEach(visitBlock);
-    }
-    if (Array.isArray(block.popup?.blocks)) {
-      block.popup.blocks.forEach(visitBlock);
-    }
+    forEachLocalizedChildBlockContainer(block, path, (blocks, blocksPath) => {
+      blocks.forEach((child, index) => visitBlock(child, `${blocksPath}[${index}]`));
+    });
     ['actions', 'recordActions', 'fields', 'fieldGroups'].forEach((slot) => {
       const items = Array.isArray(block[slot]) ? block[slot] : [];
       items.forEach((item) => {
         if (Array.isArray(item?.fields)) {
-          item.fields.forEach(visitBlock);
-        }
-        if (Array.isArray(item?.popup?.blocks)) {
-          item.popup.blocks.forEach(visitBlock);
+          item.fields.forEach((field, index) => visitBlock(field, `${path}.${slot}[${index}]`));
         }
       });
     });
   };
 
   if (Array.isArray(payload?.blocks)) {
-    payload.blocks.forEach(visitBlock);
+    payload.blocks.forEach((block, index) => visitBlock(block, `$.blocks[${index}]`));
   } else if (payload && typeof payload === 'object' && !Array.isArray(payload) && (payload.type || payload.template)) {
-    visitBlock(payload);
+    visitBlock(payload, '$');
   }
 
   return {
@@ -649,10 +1423,10 @@ function normalizeFinding(finding) {
   };
 }
 
-function collectLocalizedMainBlockSectionErrors(payload) {
+function collectLocalizedMainBlockSectionErrors(payload, operation, metadata = {}) {
   const errors = [];
 
-  const visitBlock = (block, path) => {
+  const visitBlock = (block, path, { configureTarget = false } = {}) => {
     if (!block || typeof block !== 'object' || Array.isArray(block)) {
       return;
     }
@@ -683,13 +1457,19 @@ function collectLocalizedMainBlockSectionErrors(payload) {
       }
     }
 
-    if (Array.isArray(block.blocks)) {
-      block.blocks.forEach((child, index) => visitBlock(child, `${path}.blocks[${index}]`));
-    }
-    if (Array.isArray(block.popup?.blocks)) {
-      block.popup.blocks.forEach((child, index) => visitBlock(child, `${path}.popup.blocks[${index}]`));
-    }
+    const visitChildren = configureTarget ? forEachConfigureTargetChildBlockContainer : forEachLocalizedChildBlockContainer;
+    visitChildren(block, path, (blocks, blocksPath) => {
+      blocks.forEach((child, index) => visitBlock(child, `${blocksPath}[${index}]`, { configureTarget }));
+    });
   };
+
+  if (operation === 'configure') {
+    const context = createConfigureTargetBlockContext(metadata, payload);
+    if (context) {
+      visitBlock(context.block, context.path, { configureTarget: true });
+    }
+    return errors;
+  }
 
   if (Array.isArray(payload?.blocks)) {
     payload.blocks.forEach((block, index) => visitBlock(block, `$.blocks[${index}]`));
@@ -712,17 +1492,9 @@ function collectLocalizedPublicFieldObjectErrors(payload) {
         errors.push({
           path: `${path}[${index}]`,
           ruleId: 'internal-field-keys-not-public',
-          message: `Field objects must use flat fieldType/fields/selectorFields/titleField only; remove internal keys: ${forbidden.join(', ')}.`,
+          message: `Field objects must use flat fieldType/fields/titleField only; remove internal keys: ${forbidden.join(', ')}.`,
           code: 'INTERNAL_FIELD_KEYS_NOT_PUBLIC',
           details: { keys: forbidden },
-        });
-      }
-      if (Object.hasOwn(field, 'fields') && Object.hasOwn(field, 'selectorFields')) {
-        errors.push({
-          path: `${path}[${index}]`,
-          ruleId: 'relation-fields-selector-fields-conflict',
-          message: 'Do not mix fields and selectorFields on the same relation field object.',
-          code: 'RELATION_FIELDS_SELECTOR_FIELDS_CONFLICT',
         });
       }
     });
@@ -737,12 +1509,9 @@ function collectLocalizedPublicFieldObjectErrors(payload) {
         visitFields(group.fields, `${path}.fieldGroups[${groupIndex}].fields`);
       });
     }
-    if (Array.isArray(block.blocks)) {
-      block.blocks.forEach((child, index) => visitBlock(child, `${path}.blocks[${index}]`));
-    }
-    if (Array.isArray(block.popup?.blocks)) {
-      block.popup.blocks.forEach((child, index) => visitBlock(child, `${path}.popup.blocks[${index}]`));
-    }
+    forEachLocalizedChildBlockContainer(block, path, (blocks, blocksPath) => {
+      blocks.forEach((child, index) => visitBlock(child, `${blocksPath}[${index}]`));
+    });
   };
 
   if (Array.isArray(payload?.blocks)) {
@@ -750,6 +1519,468 @@ function collectLocalizedPublicFieldObjectErrors(payload) {
   } else {
     visitBlock(payload, '$');
   }
+  return errors;
+}
+
+function collectLocalizedPublicFieldObjectErrorsForOperation(payload, operation, metadata = {}) {
+  const errors = collectLocalizedPublicFieldObjectErrors(payload);
+  if (operation === 'configure') {
+    const context = createConfigureTargetBlockContext(metadata, payload);
+    if (context) {
+      const extra = [];
+      const visitFields = (fields, path) => {
+        if (!Array.isArray(fields)) return;
+        fields.forEach((field, index) => {
+          if (!field || typeof field !== 'object' || Array.isArray(field)) return;
+          const forbidden = Object.keys(field).filter((key) => INTERNAL_FIELD_OBJECT_KEYS.has(key));
+          if (forbidden.length) {
+            extra.push({
+              path: `${path}[${index}]`,
+              ruleId: 'internal-field-keys-not-public',
+              message: `Field objects must use flat fieldType/fields/titleField only; remove internal keys: ${forbidden.join(', ')}.`,
+              code: 'INTERNAL_FIELD_KEYS_NOT_PUBLIC',
+              details: { keys: forbidden },
+            });
+          }
+        });
+      };
+      const visitBlock = (block, path) => {
+        if (!block || typeof block !== 'object' || Array.isArray(block)) return;
+        visitFields(block.fields, `${path}.fields`);
+        if (Array.isArray(block.fieldGroups)) {
+          block.fieldGroups.forEach((group, groupIndex) => {
+            if (!group || typeof group !== 'object' || Array.isArray(group)) return;
+            visitFields(group.fields, `${path}.fieldGroups[${groupIndex}].fields`);
+          });
+        }
+        forEachConfigureTargetChildBlockContainer(block, path, (blocks, blocksPath) => {
+          blocks.forEach((child, index) => visitBlock(child, `${blocksPath}[${index}]`));
+        });
+      };
+      visitBlock(context.block, context.path);
+      return [...errors, ...extra];
+    }
+  }
+  return errors;
+}
+
+function collectLocalizedRelationFieldExplicitTitleFieldErrors(payload, operation = 'compose', metadata = {}) {
+  const errors = [];
+
+  const push = (path, ruleId, message, code, details) => {
+    errors.push({
+      path,
+      ruleId,
+      message,
+      code,
+      ...(details ? { details } : {}),
+    });
+  };
+
+  const visitPopup = (popup, path, parentContext = {}) => {
+    if (!isObjectRecord(popup) || !Array.isArray(popup.blocks)) return;
+    popup.blocks.forEach((block, index) => visitBlock(block, `${path}.blocks[${index}]`, parentContext));
+  };
+
+  const visitFields = (fields, path, blockContext) => {
+    if (!Array.isArray(fields)) return;
+    fields.forEach((field, index) => {
+      const fieldPath = getPublicRelationFieldObjectPath(field);
+      if (isObjectRecord(field) && fieldPath) {
+        const sourceCollection = getLocalizedTraversalSurfaceCollection(blockContext);
+        const resolvedField = sourceCollection
+          ? resolveFieldPathInMetadata(metadata, sourceCollection, fieldPath)
+          : null;
+        const targetCollection = normalizeText(resolvedField?.field?.target);
+        if (sourceCollection && isPublicAssociationFieldMeta(resolvedField?.field)) {
+          const titleField = normalizeText(field.titleField);
+          if (titleField === 'id') {
+            push(
+              `${path}[${index}].titleField`,
+              PUBLIC_RELATION_FIELD_TITLE_FIELD_FORBIDDEN_RULE_ID,
+              buildPublicRelationFieldTitleFieldInvalidMessage(fieldPath, targetCollection, titleField),
+              'RELATION_FIELD_TITLE_FIELD_ID_FORBIDDEN',
+              { fieldPath, targetCollection, titleField },
+            );
+          } else if (titleField) {
+            const explicitTitleFieldMeta = getPublicCollectionMeta(metadata, targetCollection)?.fieldsByName?.get(titleField) || null;
+            if (!explicitTitleFieldMeta || isPublicAssociationFieldMeta(explicitTitleFieldMeta)) {
+              push(
+                `${path}[${index}].titleField`,
+                PUBLIC_RELATION_FIELD_TITLE_FIELD_INVALID_RULE_ID,
+                buildPublicRelationFieldTitleFieldInvalidTargetMessage(fieldPath, targetCollection, titleField),
+                'RELATION_FIELD_TITLE_FIELD_INVALID_TARGET',
+                { fieldPath, targetCollection, titleField },
+              );
+            }
+          } else {
+            const requirement = getPublicRelationFieldTitleFieldRequirement(metadata, sourceCollection, fieldPath);
+            if (requirement) {
+              push(
+                `${path}[${index}].titleField`,
+                PUBLIC_RELATION_FIELD_TITLE_FIELD_REQUIRED_RULE_ID,
+                buildPublicRelationFieldTitleFieldRequiredMessage(
+                  fieldPath,
+                  requirement.targetCollection,
+                  requirement.readableDisplayFieldName,
+                ),
+                'RELATION_FIELD_TITLE_FIELD_REQUIRED_WHEN_COLLECTION_TITLE_IS_ID',
+                { fieldPath, targetCollection: requirement.targetCollection },
+              );
+            }
+          }
+        }
+      }
+      if (isObjectRecord(field) && isObjectRecord(field.popup)) {
+        visitPopup(
+          field.popup,
+          `${path}[${index}].popup`,
+          getLocalizedFieldPopupSurfaceContext(metadata, blockContext, fieldPath),
+        );
+      }
+    });
+  };
+
+  const visitFieldGroups = (fieldGroups, path, blockContext) => {
+    if (!Array.isArray(fieldGroups)) return;
+    fieldGroups.forEach((group, groupIndex) => {
+      visitFields(group?.fields, `${path}[${groupIndex}].fields`, blockContext);
+    });
+  };
+
+  const visitActionPopups = (items, path, blockContext) => {
+    if (!Array.isArray(items)) return;
+    items.forEach((item, index) => {
+      if (!isObjectRecord(item) || !isObjectRecord(item.popup)) {
+        return;
+      }
+      visitPopup(
+        item.popup,
+        `${path}[${index}].popup`,
+        { surfaceCollection: getLocalizedTraversalSurfaceCollection(blockContext) },
+      );
+    });
+  };
+
+  const visitBlock = (block, path, parentContext = {}, { directSettingsPath = false } = {}) => {
+    if (!isObjectRecord(block)) return;
+    const blockContext = buildLocalizedBlockTraversalContext(block, parentContext, metadata);
+    visitFields(block.fields, `${path}.fields`, blockContext);
+    visitFieldGroups(block.fieldGroups, `${path}.fieldGroups`, blockContext);
+
+    if (Array.isArray(block.blocks)) {
+      block.blocks.forEach((child, index) => {
+        visitBlock(child, `${path}.blocks[${index}]`, { surfaceCollection: getLocalizedTraversalSurfaceCollection(blockContext) });
+      });
+    }
+    if (isObjectRecord(block.popup)) {
+      visitPopup(block.popup, `${path}.popup`, { surfaceCollection: getLocalizedTraversalSurfaceCollection(blockContext) });
+    }
+    forEachBlockHiddenPopup(block.settings, block, (popup, { key }) => {
+      const popupPath = directSettingsPath ? `${path}.${key}` : `${path}.settings.${key}`;
+      visitPopup(popup, popupPath, { surfaceCollection: getLocalizedTraversalSurfaceCollection(blockContext) });
+    });
+    visitActionPopups(block.actions, `${path}.actions`, blockContext);
+    visitActionPopups(block.recordActions, `${path}.recordActions`, blockContext);
+  };
+
+  if (operation === 'configure') {
+    const context = createConfigureTargetBlockContext(metadata, payload);
+    if (context) {
+      visitBlock(context.block, context.path, {}, { directSettingsPath: true });
+    }
+    return errors;
+  }
+
+  if (Array.isArray(payload?.blocks)) {
+    payload.blocks.forEach((block, index) => visitBlock(block, `$.blocks[${index}]`));
+    return errors;
+  }
+
+  visitBlock(payload, '$');
+  return errors;
+}
+
+function collectLocalizedHiddenPopupContractErrors(payload) {
+  const errors = [];
+
+  const visitBlock = (block, path) => {
+    if (!block || typeof block !== 'object' || Array.isArray(block)) return;
+
+    forEachBlockHiddenPopup(block.settings, block, (popup, { key }) => {
+      collectPopupDocumentContractIssues(popup, `${path}.settings.${key}`, { normalizeText }).forEach((issue) => {
+        errors.push({
+          path: issue.path,
+          ruleId: issue.ruleId,
+          message: issue.message,
+        });
+      });
+    });
+
+    forEachLocalizedChildBlockContainer(block, path, (blocks, blocksPath) => {
+      blocks.forEach((child, index) => visitBlock(child, `${blocksPath}[${index}]`));
+    });
+  };
+
+  if (Array.isArray(payload?.blocks)) {
+    payload.blocks.forEach((block, index) => visitBlock(block, `$.blocks[${index}]`));
+  } else {
+    visitBlock(payload, '$');
+  }
+
+  return errors;
+}
+
+function collectLocalizedHiddenPopupContractErrorsForOperation(payload, operation, metadata = {}) {
+  const errors = collectLocalizedHiddenPopupContractErrors(payload);
+  if (operation === 'configure') {
+    const context = createConfigureTargetBlockContext(metadata, payload);
+    if (context) {
+      const extra = [];
+      const visitBlock = (block, path) => {
+        if (!block || typeof block !== 'object' || Array.isArray(block)) return;
+        forEachBlockHiddenPopup(block.settings, block, (popup, { key }) => {
+          collectPopupDocumentContractIssues(popup, `${path}.${key}`, { normalizeText }).forEach((issue) => {
+            extra.push({
+              path: issue.path,
+              ruleId: issue.ruleId,
+              message: issue.message,
+            });
+          });
+        });
+        forEachConfigureTargetChildBlockContainer(block, path, (blocks, blocksPath) => {
+          blocks.forEach((child, index) => visitBlock(child, `${blocksPath}[${index}]`));
+        });
+      };
+      visitBlock(context.block, context.path);
+      return [...errors, ...extra];
+    }
+  }
+  return errors;
+}
+
+function collectLocalizedCalendarKanbanSemanticErrors(payload, operation, metadata = {}) {
+  const errors = [];
+
+  const visitBlock = (block, path) => {
+    if (!isObjectRecord(block)) return;
+    collectCalendarKanbanMainBlockSemanticIssues(block, path, metadata).forEach((issue) => {
+      errors.push({
+        path: issue.path,
+        ruleId: issue.ruleId,
+        message: issue.message,
+      });
+    });
+    forEachLocalizedChildBlockContainer(block, path, (blocks, blocksPath) => {
+      blocks.forEach((child, index) => visitBlock(child, `${blocksPath}[${index}]`));
+    });
+  };
+
+  if (Array.isArray(payload?.blocks)) {
+    payload.blocks.forEach((block, index) => visitBlock(block, `$.blocks[${index}]`));
+  } else {
+    visitBlock(payload, '$');
+  }
+
+  if (operation === 'configure') {
+    const context = createConfigureTargetBlockContext(metadata, payload);
+    if (context) {
+      collectCalendarKanbanMainBlockSemanticIssues(context.block, context.path, metadata, { directSettingsPath: true }).forEach((issue) => {
+        errors.push({
+          path: issue.path,
+          ruleId: issue.ruleId,
+          message: issue.message,
+        });
+      });
+        forEachConfigureTargetChildBlockContainer(context.block, context.path, (blocks, blocksPath) => {
+          blocks.forEach((child, index) => visitBlock(child, `${blocksPath}[${index}]`));
+        });
+    }
+  }
+
+  return errors;
+}
+
+function collectLocalizedRelationPopupResourceErrors(payload, operation = 'compose', metadata = {}) {
+  const errors = [];
+
+  const push = (path, ruleId, message, code, details) => {
+    errors.push({
+      path,
+      ruleId,
+      message,
+      code,
+      ...(details ? { details } : {}),
+    });
+  };
+
+  const validateRelationPopup = (item, itemPath, parentCollectionName) => {
+    if (!isObjectRecord(item) || !isObjectRecord(item.popup) || !Array.isArray(item.popup.blocks)) return;
+    const relationField = normalizeText(item.field);
+    if (!relationField || relationField.includes('.')) return;
+    const associationRequirement = resolveAssociationFieldMetadata(metadata, parentCollectionName, relationField);
+    if (!associationRequirement) return;
+    const canonicalAssociationField = associationRequirement?.associationField || getDefaultsAssociationFieldKey(relationField);
+    const targetCollection = normalizeText(associationRequirement?.targetCollection);
+
+    item.popup.blocks.forEach((block, blockIndex) => {
+      if (!isObjectRecord(block)) return;
+      const blockType = normalizeText(block.type);
+      const blockPath = `${itemPath}.popup.blocks[${blockIndex}]`;
+      const binding = getNodeBinding(block);
+      const blockCollection = getBlockCollectionName(block);
+
+      if (RELATION_FIELD_POPUP_CURRENT_RECORD_BLOCK_TYPES.has(blockType)) {
+        if ((!binding || binding === 'currentcollection') && !targetCollection) {
+          push(
+            `${blockPath}.resource.binding`,
+            'relation-popup-current-record-target-unresolved',
+            `Relation field popup ${blockType} blocks must use resource.binding="currentRecord" and a target collection that can be verified from collection metadata.`,
+            'RELATION_POPUP_CURRENT_RECORD_TARGET_UNRESOLVED',
+            { collectionName: parentCollectionName, associationField: canonicalAssociationField },
+          );
+          return;
+        }
+        if (targetCollection && blockCollection && blockCollection !== targetCollection) {
+          push(
+            `${blockPath}.resource.collectionName`,
+            'relation-popup-current-record-target-mismatch',
+            `Relation field popup ${blockType} blocks must target collection "${targetCollection}" for relation field "${canonicalAssociationField}".`,
+            'RELATION_POPUP_CURRENT_RECORD_TARGET_MISMATCH',
+            { expectedCollectionName: targetCollection, actualCollectionName: blockCollection },
+          );
+          return;
+        }
+        if (binding && binding !== 'currentcollection' && binding !== 'currentrecord') {
+          push(
+            `${blockPath}.resource.binding`,
+            'relation-popup-current-record-binding-required',
+            `Relation field popup ${blockType} blocks must use resource.binding="currentRecord" for the clicked related record.`,
+            'RELATION_POPUP_CURRENT_RECORD_BINDING_REQUIRED',
+          );
+        }
+        return;
+      }
+
+      if (RELATION_FIELD_POPUP_ASSOCIATED_RECORDS_BLOCK_TYPES.has(blockType)) {
+        if (binding !== 'associatedrecords') {
+          push(
+            `${blockPath}.resource.binding`,
+            'relation-popup-associated-records-binding-required',
+            `Relation field popup ${blockType} blocks must use resource.binding="associatedRecords" with resource.associationField="${canonicalAssociationField}".`,
+            'RELATION_POPUP_ASSOCIATED_RECORDS_BINDING_REQUIRED',
+          );
+          return;
+        }
+        const blockAssociationField = getDefaultsAssociationFieldKey(getNodeAssociationField(block));
+        if (canonicalAssociationField && blockAssociationField !== canonicalAssociationField) {
+          push(
+            `${blockPath}.resource.associationField`,
+            'relation-popup-associated-records-association-field-required',
+            `Relation field popup associatedRecords blocks must set resource.associationField="${canonicalAssociationField}".`,
+            'RELATION_POPUP_ASSOCIATED_RECORDS_ASSOCIATION_FIELD_REQUIRED',
+            { expectedAssociationField: canonicalAssociationField, actualAssociationField: blockAssociationField },
+          );
+        }
+      }
+    });
+  };
+
+  const visitFields = (fields, path, parentCollectionName) => {
+    if (!Array.isArray(fields)) return;
+    fields.forEach((field, index) => validateRelationPopup(field, `${path}[${index}]`, parentCollectionName));
+  };
+
+  const visitBlock = (block, path, parentCollectionName = '') => {
+    if (!isObjectRecord(block)) return;
+    const blockType = normalizeText(block.type);
+    const collectionName = getLocalizedBlockCollectionName(block, parentCollectionName);
+    if (DISPLAY_ASSOCIATION_FIELD_POPUP_REQUIRED_BLOCK_TYPES.has(blockType)) {
+      visitFields(block.fields, `${path}.fields`, collectionName);
+      if (Array.isArray(block.fieldGroups)) {
+        block.fieldGroups.forEach((group, groupIndex) => {
+          visitFields(group?.fields, `${path}.fieldGroups[${groupIndex}].fields`, collectionName);
+        });
+      }
+    }
+    forEachLocalizedChildBlockContainer(block, path, (blocks, blocksPath) => {
+      blocks.forEach((child, index) => visitBlock(child, `${blocksPath}[${index}]`, collectionName));
+    });
+  };
+
+  if (Array.isArray(payload?.blocks)) {
+    payload.blocks.forEach((block, index) => visitBlock(block, `$.blocks[${index}]`));
+  } else {
+    visitBlock(payload, '$');
+  }
+
+  if (operation === 'configure') {
+    const context = createConfigureTargetBlockContext(metadata, payload);
+    if (context) {
+      const visitConfigureBlock = (block, path, parentCollectionName = '') => {
+        if (!isObjectRecord(block)) return;
+        const blockType = normalizeText(block.type);
+        const collectionName = getLocalizedBlockCollectionName(block, parentCollectionName);
+        if (DISPLAY_ASSOCIATION_FIELD_POPUP_REQUIRED_BLOCK_TYPES.has(blockType)) {
+          visitFields(block.fields, `${path}.fields`, collectionName);
+          if (Array.isArray(block.fieldGroups)) {
+            block.fieldGroups.forEach((group, groupIndex) => {
+              visitFields(group?.fields, `${path}.fieldGroups[${groupIndex}].fields`, collectionName);
+            });
+          }
+        }
+        forEachConfigureTargetChildBlockContainer(block, path, (blocks, blocksPath) => {
+          blocks.forEach((child, index) => visitConfigureBlock(child, `${blocksPath}[${index}]`, collectionName));
+        });
+      };
+      visitConfigureBlock(context.block, context.path);
+    }
+  }
+
+  return errors;
+}
+
+function collectLocalizedSortAliasErrors(payload, operation, metadata = {}) {
+  const errors = [];
+
+  const validateSettings = (settings, path) => {
+    if (!isObjectRecord(settings) || !Object.hasOwn(settings, 'sort') || !Object.hasOwn(settings, 'sorting')) {
+      return;
+    }
+    if (settingsSortValuesMatch(settings.sort, settings.sorting)) {
+      return;
+    }
+    errors.push({
+      path: `${path}.sort`,
+      ruleId: 'settings-sort-sorting-conflict',
+      message: 'settings.sort is a compatibility alias for settings.sorting; when both are present they must describe the same ordering.',
+      code: 'SETTINGS_SORT_SORTING_CONFLICT',
+    });
+  };
+
+  const visitBlock = (block, path) => {
+    if (!isObjectRecord(block)) return;
+    if (isSortablePublicBlockType(block.type)) {
+      validateSettings(block.settings, `${path}.settings`);
+    }
+    forEachLocalizedChildBlockContainer(block, path, (blocks, blocksPath) => {
+      blocks.forEach((child, index) => visitBlock(child, `${blocksPath}[${index}]`));
+    });
+  };
+
+  if (operation === 'configure') {
+    const targetEntry = getLiveTopologyEntry(metadata, payload?.target?.uid);
+    if (isSortablePublicLiveUse(getLiveEntryUse(targetEntry))) {
+      validateSettings(payload?.changes, '$.changes');
+    }
+  }
+
+  if (Array.isArray(payload?.blocks)) {
+    payload.blocks.forEach((block, index) => visitBlock(block, `$.blocks[${index}]`));
+  } else {
+    visitBlock(payload, '$');
+  }
+
   return errors;
 }
 
@@ -1091,6 +2322,142 @@ function collectLocalizedTreeConnectFieldsErrors(payload, operation, metadata) {
   return errors;
 }
 
+function collectLocalizedAssignValuesErrors(payload, operation, metadata) {
+  const errors = [];
+
+  const push = (path, ruleId, message, code, details = undefined) => {
+    errors.push({
+      path,
+      ruleId,
+      message,
+      code,
+      ...(details ? { details } : {}),
+    });
+  };
+
+  const validateAssignValuesObject = (assignValues, assignValuesPath, collectionName) => {
+    const normalizedCollectionName = normalizeText(collectionName);
+    const collectionMeta = getCollectionMeta(metadata, normalizedCollectionName);
+    const issues = collectAssignValuesValidationIssues({
+      assignValues,
+      path: assignValuesPath,
+      collectionName: normalizedCollectionName,
+      collectionMeta,
+      normalizeName: normalizeText,
+      valueLabel: 'settings.assignValues',
+      metadataValueLabel: 'assignValues',
+      includeDetails: true,
+    });
+    issues.forEach((issue) => {
+      push(
+        issue.path,
+        issue.ruleId,
+        issue.message,
+        issue.code,
+        issue.details,
+      );
+    });
+  };
+
+  const validateAction = (item, path, collectionName, slot) => {
+    const actionType = getActionType(item);
+    if (slot === 'recordActions' && actionType === 'bulkupdate') {
+      push(
+        path,
+        'bulk-update-must-use-actions',
+        '`bulkUpdate` is a collection action and must be authored under block actions.',
+        'BULK_UPDATE_MUST_USE_ACTIONS',
+      );
+    }
+    if (slot === 'actions' && actionType === 'updaterecord') {
+      push(
+        path,
+        'update-record-must-use-record-actions',
+        '`updateRecord` is a record action and must be authored under recordActions.',
+        'UPDATE_RECORD_MUST_USE_RECORD_ACTIONS',
+      );
+    }
+    if (!hasAssignValues(item)) {
+      return;
+    }
+    if ((slot === 'actions' && actionType !== 'bulkupdate') || (slot === 'recordActions' && actionType !== 'updaterecord')) {
+      return;
+    }
+    validateAssignValuesObject(item.settings.assignValues, `${path}.settings.assignValues`, collectionName);
+  };
+
+  const visitActions = (items, path, collectionName, slot) => {
+    if (!Array.isArray(items)) return;
+    items.forEach((item, index) => {
+      const itemPath = `${path}[${index}]`;
+      validateAction(item, itemPath, collectionName, slot);
+      if (Array.isArray(item?.popup?.blocks)) {
+        item.popup.blocks.forEach((block, blockIndex) => visitBlock(
+          block,
+          `${itemPath}.popup.blocks[${blockIndex}]`,
+          collectionName,
+        ));
+      }
+    });
+  };
+
+  const visitFieldPopups = (items, path, collectionName) => {
+    if (!Array.isArray(items)) return;
+    items.forEach((item, index) => {
+      if (Array.isArray(item?.popup?.blocks)) {
+        item.popup.blocks.forEach((block, blockIndex) => visitBlock(
+          block,
+          `${path}[${index}].popup.blocks[${blockIndex}]`,
+          collectionName,
+        ));
+      }
+    });
+  };
+
+  const visitBlock = (block, path, parentCollectionName = '') => {
+    if (!isObjectRecord(block)) return;
+    const collectionName = getLocalizedBlockCollectionName(block, parentCollectionName);
+    visitActions(block.actions, `${path}.actions`, collectionName, 'actions');
+    visitActions(block.recordActions, `${path}.recordActions`, collectionName, 'recordActions');
+    visitFieldPopups(block.fields, `${path}.fields`, collectionName);
+    if (Array.isArray(block.fieldGroups)) {
+      block.fieldGroups.forEach((group, groupIndex) => {
+        visitFieldPopups(group?.fields, `${path}.fieldGroups[${groupIndex}].fields`, collectionName);
+      });
+    }
+    forEachLocalizedChildBlockContainer(block, path, (blocks, blocksPath) => {
+      blocks.forEach((child, index) => visitBlock(child, `${blocksPath}[${index}]`, collectionName));
+    });
+  };
+
+  if (Array.isArray(payload?.blocks)) {
+    payload.blocks.forEach((block, index) => visitBlock(block, `$.blocks[${index}]`));
+  } else {
+    visitBlock(payload, '$');
+  }
+
+  if (operation === 'configure' && Object.hasOwn(payload?.changes || {}, 'assignValues')) {
+    const targetUid = normalizeText(payload?.target?.uid);
+    const targetEntry = getLiveTopologyEntry(metadata, targetUid);
+    const targetUse = getLiveEntryUse(targetEntry);
+    if (targetEntry && targetUse && !LIVE_UPDATE_ACTION_USES.has(targetUse)) {
+      push(
+        '$.target.uid',
+        'assign-values-target-unsupported',
+        'localized configure changes.assignValues requires a BulkUpdateActionModel or UpdateRecordActionModel target.',
+        'ASSIGN_VALUES_TARGET_UNSUPPORTED',
+      );
+      return errors;
+    }
+    const targetCollection = getLiveEntryCollectionName(targetEntry);
+    const parentCollection = targetCollection
+      || getLiveEntryCollectionName(getLiveTopologyEntry(metadata, getLiveEntryParentUid(targetEntry)));
+    validateAssignValuesObject(payload.changes.assignValues, '$.changes.assignValues', parentCollection);
+  }
+
+  return errors;
+}
+
 export function runLocalizedWritePreflight({
   operation,
   body,
@@ -1107,28 +2474,18 @@ export function runLocalizedWritePreflight({
     payload: normalizedBody,
     metadata: normalizedMetadata,
   });
-  const localizedCollectionRefs = collectLocalizedCollectionRefs(normalizedBody);
+  const localizedCollectionRefs = collectLocalizedCollectionRefs(normalizedBody, normalizedOperation, normalizedMetadata);
   const treeConnectCollectionRefs = collectLocalizedTreeConnectCollectionRefs(normalizedBody, normalizedOperation, normalizedMetadata);
+  const assignValuesCollectionRefs = collectLocalizedAssignValuesCollectionRefs(normalizedBody, normalizedOperation, normalizedMetadata);
   const requiredMetadata = {
     ...extractedMetadata,
-    collectionRefs: [...(extractedMetadata.collectionRefs || []), ...localizedCollectionRefs, ...treeConnectCollectionRefs],
+    collectionRefs: [
+      ...(extractedMetadata.collectionRefs || []),
+      ...localizedCollectionRefs,
+      ...treeConnectCollectionRefs,
+      ...assignValuesCollectionRefs,
+    ],
   };
-
-  const canonicalize = canonicalizePayload({
-    payload: normalizedBody,
-    metadata: normalizedMetadata,
-    mode,
-    snapshotPath,
-  });
-  const cliBody = normalizeHeightSettingsForWrite(normalizedOperation, canonicalize.payload);
-  const audit = auditPayload({
-    payload: cliBody,
-    metadata: normalizedMetadata,
-    mode,
-    requirements,
-    riskAccept,
-    snapshotPath,
-  });
   const errors = [];
   const errorSeen = new Set();
   const pushError = (issue) => {
@@ -1137,6 +2494,27 @@ export function runLocalizedWritePreflight({
     errorSeen.add(key);
     errors.push(issue);
   };
+
+  collectLocalizedAssignValuesErrors(normalizedBody, normalizedOperation, normalizedMetadata)
+    .filter((issue) => issue.ruleId === 'assign-values-must-be-object')
+    .forEach(pushError);
+
+  const canonicalize = canonicalizePayload({
+    payload: normalizedBody,
+    metadata: normalizedMetadata,
+    mode,
+    snapshotPath,
+  });
+  collectLocalizedSortAliasErrors(canonicalize.payload, normalizedOperation, normalizedMetadata).forEach(pushError);
+  const cliBody = normalizeHeightSettingsForWrite(normalizedOperation, canonicalize.payload, normalizedMetadata);
+  const audit = auditPayload({
+    payload: cliBody,
+    metadata: normalizedMetadata,
+    mode,
+    requirements,
+    riskAccept,
+    snapshotPath,
+  });
   requiredMetadata.collectionRefs
     .filter((item) => !normalizedMetadata.collections?.[item.collectionName])
     .forEach((item) => {
@@ -1148,9 +2526,18 @@ export function runLocalizedWritePreflight({
         details: item,
       });
     });
-  collectLocalizedMainBlockSectionErrors(cliBody).forEach(pushError);
-  collectLocalizedPublicFieldObjectErrors(cliBody).forEach(pushError);
+  collectLocalizedMainBlockSectionErrors(cliBody, normalizedOperation, normalizedMetadata).forEach(pushError);
+  collectLocalizedHiddenPopupContractErrorsForOperation(cliBody, normalizedOperation, normalizedMetadata).forEach(pushError);
+  collectLocalizedPublicDataSurfaceDefaultFilterErrors(cliBody, normalizedOperation, normalizedMetadata).forEach(pushError);
+  collectLocalizedCalendarKanbanSemanticErrors(cliBody, normalizedOperation, normalizedMetadata).forEach(pushError);
+  collectLocalizedChartDisplayTitleErrors(cliBody, normalizedOperation, normalizedMetadata).forEach(pushError);
+  collectLocalizedChartBuilderRelationFieldErrors(cliBody, normalizedOperation, normalizedMetadata).forEach(pushError);
+  collectLocalizedGridCardSettingsErrors(cliBody, normalizedOperation, normalizedMetadata).forEach(pushError);
+  collectLocalizedPublicFieldObjectErrorsForOperation(cliBody, normalizedOperation, normalizedMetadata).forEach(pushError);
+  collectLocalizedRelationFieldExplicitTitleFieldErrors(cliBody, normalizedOperation, normalizedMetadata).forEach(pushError);
+  collectLocalizedRelationPopupResourceErrors(cliBody, normalizedOperation, normalizedMetadata).forEach(pushError);
   collectLocalizedTreeConnectFieldsErrors(cliBody, normalizedOperation, normalizedMetadata).forEach(pushError);
+  collectLocalizedAssignValuesErrors(cliBody, normalizedOperation, normalizedMetadata).forEach(pushError);
   audit.blockers.map(normalizeFinding).forEach(pushError);
 
   return {

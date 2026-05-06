@@ -6,30 +6,30 @@ Do not open this file until you are preparing the real nb body. For the common l
 
 Use it with:
 
-- [cli-command-surface.md](./cli-command-surface.md) for canonical nb API families
-- [transport-crosswalk.md](./transport-crosswalk.md) for the nb API family
+- [cli-command-surface.md](./cli-command-surface.md) for canonical wrapper families
+- [transport-crosswalk.md](./transport-crosswalk.md) for the wrapper family
 - [page-blueprint.md](./page-blueprint.md), [reaction.md](./reaction.md), and [templates.md](./templates.md) for business-object rules and template planning
 
-Canonical front door is `nb api flow-surfaces`. Use this file for the nb request body / locator shape you actually send.
+Canonical front door is `node skills/nocobase-ui-builder/runtime/bin/nb-flow-surfaces.mjs`. Use this file for the raw business object / locator shape passed through the wrapper.
 
 ## 0. Global Rule
 
-- `nb api flow-surfaces get` is the common exception: it uses top-level locator flags and no JSON body.
+- wrapper `get` is the common exception: it uses top-level locator flags and no JSON body.
 - Most other body-based `flow-surfaces` commands take the raw business object through CLI `--body` / `--body-file`.
 - Never stringify the business object.
 - Never add an outer `{ values: ... }` wrapper.
 - Never invent the literal `"root"` as `target.uid` / `locator.uid`; use a real uid from live readback.
 - For `applyBlueprint`, the nb request body is one page blueprint business object. On a first whole-page write that already ran `prepare-write`, that means `result.cliBody`, not the original draft blueprint. The helper stays local/read-only; the later transport step must send only that prepared object. Do not wrap it again.
-- For whole-page `applyBlueprint`, recompute the involved target collections from live metadata and rebuild top-level `defaults.collections` from scratch on each draft. Every involved direct collection keeps fixed `popups.view` / `addNew` / `edit` `{ name, description }` descriptors there, `defaults.collections.<collection>.fieldGroups` stays only on the target collection when a fixed generated popup scene should still have more than 10 effective fields, `table` blocks always pull their collection into the `addNew` threshold evaluation, and relation popup naming stays under `popups.associations` keyed only by the first relation segment; do not send `defaults.blocks` or popup-default content/layout.
+- For whole-page `applyBlueprint`, recompute the involved target collections from live metadata and rebuild top-level `defaults.collections` from scratch on each draft. Every involved direct collection keeps fixed `popups.view` / `addNew` / `edit` `{ name, description }` descriptors there, `defaults.collections.<collection>.fieldGroups` stays only on the target collection when a fixed generated popup scene should still have more than 10 effective fields, `table` blocks always pull their collection into the `addNew` threshold evaluation, and relation popup naming stays under `popups.associations` keyed only by the first relation segment; do not send `defaults.blocks` or popup-default content/layout. After generating defaults fieldGroups, run one compact self-review with a short structured verdict (`approve` or `regenerate`), using the lowest practical reasoning effort / no-think mode and no chain-of-thought; if needed, regenerate once and stop.
 - Public applyBlueprint blocks do **not** support generic `form`; use `editForm` or `createForm`.
 - For custom `edit` popups with `popup.blocks`, include exactly one `editForm` block.
 - For normal single-page requests, keep exactly one real tab in the blueprint; do not send empty / placeholder tabs or placeholder `markdown` / note / banner blocks unless the user explicitly asked for them.
 - Default blueprint `fields[]` entries to simple strings. Only use a field object when `popup`, `target`, `renderer`, or field-specific `type` is required.
-- `layout` belongs only on `tabs[]` or inline `popup`, and when present it must be an object. Omit it only when that tab/popup has at most one non-filter block; otherwise explicit keyed layout is required.
+- `layout` belongs only on `tabs[]` or inline `popup`, and when present it must be an object. Omit it only when that tab/popup has at most one non-filter block; otherwise explicit keyed layout is required, and when multiple non-filter blocks share the scope each non-template-backed data block needs a `title`; template-backed blocks are exempt; a single non-filter block may omit its title unless the user explicitly asks for one.
 - Public page/popup/fields layout `{ rows: [[{ key, span }]] }` is different from low-level `set-layout` runtime `rows` / `sizes`. Do not mix those grammars.
 - When authoring direct non-template public `table` / `list` / `gridCard` / `calendar` / `kanban` creations through `applyBlueprint`, `compose`, `add-block`, or `add-blocks`, always include a non-empty block-level `defaultFilter` on that block/create envelope. Prefer 3 to 4 common business fields when metadata supports them; if fewer than 3 suitable candidates exist, cover every available candidate instead. Keep the same host's block-level `filter` action routing for filter/search intent, but the action itself is optional.
 - For repeat-eligible popup / block / fields scenes, contextual `list-templates` is mandatory before binding a template or finalizing a reusable/template-backed fallback; keyword-only search stays discovery-only. Fresh one-off pages with explicit local popup / block content, no existing template reference, and no reuse / save-template ask may stay inline and skip template routing.
-- When no explicit `popup.template` is present, use `popup.tryTemplate=true` as the default write fallback on popup-capable `add-field` / `add-fields`, `add-action` / `add-actions`, `add-record-action` / `add-record-actions`, `compose` action/field popup specs, and whole-page `applyBlueprint` inline popup specs. Local popup content may remain as the miss fallback. Keep [templates.md](./templates.md) as the planning source of truth.
+- When no explicit `popup.template` is present, use `popup.tryTemplate=true` as the default write fallback on popup-capable `add-field` / `add-fields`, `add-action` / `add-actions`, `add-record-action` / `add-record-actions`, `compose` action/field popup specs, whole-page `applyBlueprint` inline popup specs, and calendar/kanban hidden popup specs. In whole-page `create`, prepare-write also auto-adds missing direct non-template calendar/kanban hidden popup specs with `tryTemplate=true`; local popup content may remain as the miss fallback. Keep [templates.md](./templates.md) as the planning source of truth, and keep helper-only popup/defaults rules in [helper-contracts.md](./helper-contracts.md).
 - When the user explicitly wants the new local popup to become a reusable popup template immediately, use `popup.saveAsTemplate={ name, description }` on those same create-time popup write paths. It cannot be combined with `popup.template`, and it may coexist with `popup.tryTemplate=true`: a hit reuses the matched template directly, while a miss needs explicit local `popup.blocks` so the fallback popup can be saved.
 - For localized create/append writes, do not assume the request body is the final action list; read back the persisted surface before adding more actions or popup wiring.
 - When the intended UX is "click the shown title/name to open details", prefer field popup / `clickToOpen` / `openView` semantics and avoid adding a redundant `view` record action unless the user explicitly asked for a button/action column.
@@ -37,13 +37,13 @@ Canonical front door is `nb api flow-surfaces`. Use this file for the nb request
 Safe mental model:
 
 1. author the inner business object
-2. send that same prepared object as raw JSON through CLI `--body` / `--body-file`, or use locator flags when the command is bodyless
+2. send that same prepared object through `nb-flow-surfaces.mjs --body` / `--body-file`, or use locator flags when the command is bodyless
 3. do not wrap that object again
 4. never transform the business object into a stringified nested wrapper
 
 Common wrong shapes:
 
-Wrong nb body:
+Wrong wrapper body:
 
 ```json
 {
@@ -54,7 +54,7 @@ Wrong nb body:
 }
 ```
 
-Correct nb body for `configure`:
+Correct body for wrapper `configure`:
 
 ```json
 {
@@ -375,7 +375,7 @@ nb request body:
 }
 ```
 
-When the target group is not already known, `navigation.group.title` is also valid; applyBlueprint will reuse a unique same-title group or create a new one when no match exists, but multi-match same-title cases must stop and require explicit `routeId` before write. Same-title reuse is title-only. `navigation.group.routeId` is exact targeting only and must not be mixed with `icon`, `tooltip`, or `hideInMenu`; if an existing group's metadata must change, use low-level `update-menu` instead.
+When the target group is not already known, `navigation.group.title` is also valid; applyBlueprint will reuse a unique same-title group or create a new one when no match exists, but multi-match same-title cases must stop and require explicit `routeId` before write. `navigation.group.routeId` has highest priority; if it is present, `title`, `icon`, `tooltip`, and `hideInMenu` are ignored. For title-based reuse, `icon`, `tooltip`, and `hideInMenu` are also ignored when an existing group is reused. If an existing group's metadata must change, use low-level `update-menu` instead.
 
 When the requirement is "click the shown record / relation record to open details", prefer a field popup rather than inventing a new action button:
 
@@ -612,6 +612,7 @@ Notes:
 - Each `fieldsLayout` row must be non-empty, every keyed field must be placed exactly once, and object-cell `span` must be numeric.
 - `addBlock` does not accept `fieldsLayout`; when the first write must shape a field grid directly, prefer `compose` over `addBlock`.
 - For `table` / `list` / `gridCard` / `calendar` / `kanban`, keep filtering/search as a normal block-level `filter` action unless the user explicitly asked for `filterForm`.
+- Calendar and kanban hidden popup hosts follow [page-blueprint.md](./page-blueprint.md): configure calendar `settings.quickCreatePopup` / `settings.eventPopup` and kanban `settings.quickCreatePopup` / `settings.cardPopup`; put template choices there, not as a main-block `popup.template`. For helper-only validation/default completion behavior, refer to [helper-contracts.md](./helper-contracts.md).
 - `compose` popup-capable field/action children follow the same popup contract as `add-field` / `add-action` / `add-record-action`: default to `popup.tryTemplate=true` unless an explicit `popup.template` or explicit `popup.tryTemplate=false` override already exists.
 - After `compose`, verify the persisted children rather than assuming the write body proves the final action order, popup-template binding, or click/open behavior.
 
@@ -663,7 +664,7 @@ Notes:
               "value": {
                 "source": "runjs",
                 "version": "v2",
-                "code": "const amount = Number(ctx.formValues?.amount || 0); return amount;"
+                "code": "const amount = Number(ctx.formValues?.amount || 0);\n\nreturn amount;"
               }
             },
             {
@@ -671,7 +672,7 @@ Notes:
               "value": {
                 "source": "runjs",
                 "version": "v2",
-                "code": "const amount = Number(ctx.formValues?.amount || 0); const taxRate = Number(ctx.formValues?.taxRate || 0); return amount + amount * taxRate;"
+                "code": "const amount = Number(ctx.formValues?.amount || 0);\nconst taxRate = Number(ctx.formValues?.taxRate || 0);\n\nreturn amount + amount * taxRate;"
               }
             }
           ]

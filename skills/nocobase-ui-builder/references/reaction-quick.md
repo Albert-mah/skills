@@ -17,6 +17,7 @@ For artifact-only localized reaction drafting, stay on this file. Do not enumera
 - if the interaction logic belongs to the page you are building now, keep it in the same blueprint with top-level `reaction.items[]`
 - target same-run public paths, not live uids
 - default to no `expectedFingerprint` in first-pass whole-page blueprints
+- first-pass whole-page `reaction.items[]` uses no live `get-reaction-meta`, no live uid, and no live fingerprint; there is no persisted scene to probe until after `applyBlueprint` succeeds
 - use the same explicit block/action keys that the structure uses, for example:
   - `main.recordCreateForm`
   - `main.recordsTable.refreshAction`
@@ -27,12 +28,12 @@ For artifact-only localized reaction drafting, stay on this file. Do not enumera
 Whole-page-first rule:
 
 - do not split a newly created page into a separate live reaction phase just because the page has more blocks, more popups, or more reaction families
-- if a whole-page `applyBlueprint` fails before first success, repair the blueprint from the error, rerun `prepare-write` and preview, and retry blueprint-only up to 5 rounds; do not switch to localized `get-reaction-meta` + `set*Rules` during those pre-success retries; after 5 failed rounds, report the latest blueprint / preview / error evidence
+- if a whole-page `applyBlueprint` fails before first success, repair the blueprint from the error, rerun `prepare-write`, and retry blueprint-only up to 5 rounds; do not switch to localized `get-reaction-meta` + `set*Rules` during those pre-success retries; after 5 failed rounds, report the latest blueprint / error evidence
 - after one successful whole-page `applyBlueprint`, use localized `get-reaction-meta` + `set*Rules` repair only for an explicit residual local/live gap, and keep that repair narrowly scoped
 
 ### Existing live page
 
-1. `nb api flow-surfaces get-reaction-meta`
+1. `node skills/nocobase-ui-builder/runtime/bin/nb-flow-surfaces.mjs get-reaction-meta`
 2. choose the returned capability by `kind`
 3. reuse its `fingerprint`
 4. call the matching `set-*` rules command
@@ -40,7 +41,7 @@ Whole-page-first rule:
 When extracting fingerprints from CLI JSON, do not pipe the meta through `rg` and then copy the nearest fingerprint. A single target can expose `fieldValue`, `blockLinkage`, and `fieldLinkage` at once, and their fingerprints are not interchangeable. Select by `kind`:
 
 ```bash
-nb api flow-surfaces get-reaction-meta -e <env> -j \
+node skills/nocobase-ui-builder/runtime/bin/nb-flow-surfaces.mjs get-reaction-meta -e <env> -j \
   --target '{"uid":"<target-uid>"}' > /tmp/reaction-meta.json
 
 jq -r '.data.capabilities[] | select(.kind=="fieldLinkage") | .fingerprint' /tmp/reaction-meta.json
@@ -114,7 +115,7 @@ For whole-page `reaction.items[]`, keep the public rule types aligned with the s
                     "value": {
                       "source": "runjs",
                       "version": "v2",
-                      "code": "const title = String(ctx.formValues?.title || '').trim(); if (!title) return null; return title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');"
+                      "code": "const title = String(ctx.formValues?.title || '').trim();\nif (!title) return null;\n\nreturn title\n  .toLowerCase()\n  .replace(/[^a-z0-9]+/g, '-')\n  .replace(/^-+|-+$/g, '');"
                     }
                   }
                 ]
@@ -185,6 +186,8 @@ The same rule applies to form submit guards. If a `createForm` / `editForm` subm
 
 For computed form fields such as "derive `name` from `title`" or "derive `nickname` from `username` / email", use the `fieldLinkage` capability and an `assignField` action with `value.source = "runjs"`:
 
+Keep value-return RunJS readable in the eventual NocoBase editor. Multi-statement snippets must keep newline characters in the JSON `code` string; do not compress local variables, guards, and return logic into one physical line.
+
 ```json
 {
   "target": { "uid": "<create-form-uid>" },
@@ -208,7 +211,7 @@ For computed form fields such as "derive `name` from `title`" or "derive `nickna
               "value": {
                 "source": "runjs",
                 "version": "v2",
-                "code": "const title = String(ctx.formValues?.title || '').trim(); if (!title) return null; return title.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');"
+                "code": "const title = String(ctx.formValues?.title || '').trim();\nif (!title) return null;\n\nreturn title\n  .toLowerCase()\n  .replace(/[^a-z0-9]+/g, '_')\n  .replace(/^_+|_+$/g, '');"
               }
             }
           ]
@@ -231,10 +234,10 @@ For a form-scoped helper item, use this exact decision order:
 Verified CLI shape for a form-scoped helper item:
 
 ```bash
-nb api flow-surfaces add-field -e <env> -j \
+node skills/nocobase-ui-builder/runtime/bin/nb-flow-surfaces.mjs add-field -e <env> -j \
   --target '{"uid":"<create-form-uid>"}' \
   --type jsItem \
-  --settings '{"label":"Helper","showLabel":false,"version":"v2","code":"const selected = Array.isArray(ctx.formValues?.roles) ? ctx.formValues.roles.length > 0 : Boolean(ctx.formValues?.roles); if (!selected) { ctx.render(null); return; } ctx.render(\"Helper content is now visible.\");"}'
+  --settings '{"label":"Helper","showLabel":false,"version":"v2","code":"const roles = ctx.formValues?.roles;\nconst selected = Array.isArray(roles)\n  ? roles.length > 0\n  : Boolean(roles);\n\nif (!selected) {\n  ctx.render(null);\n  return;\n}\n\nctx.render(\"Helper content is now visible.\");"}'
 ```
 
 For a protected delete guard on an existing live page, first make sure the table has a concrete delete record action, then run `get-reaction-meta` on that returned action uid and write `set-action-linkage-rules`.
@@ -249,6 +252,24 @@ For a common artifact-only localized reaction task, create:
 - `readback-checklist.md`
 
 The JSON can stay schematic. It only needs to make the matched `get-reaction-meta` + `set*Rules` path explicit; it does not need full final rule syntax unless the user asked for that detail.
+
+For artifact-only localized reaction drafts, do not invent a live `uid` or fingerprint. The artifact is a plan for the future live write, so make the probe and the dependent writes explicit:
+
+```json
+{
+  "route": "localized-reaction",
+  "metaProbe": {
+    "operation": "get-reaction-meta",
+    "target": "main.recordCreateForm",
+    "requiredKinds": ["fieldValue", "fieldLinkage"],
+    "requiredSourcePaths": ["formValues.status"]
+  },
+  "writes": [
+    { "operation": "setFieldValueRules", "dependsOnKind": "fieldValue" },
+    { "operation": "setFieldLinkageRules", "dependsOnKind": "fieldLinkage" }
+  ]
+}
+```
 
 ## Open next only if needed
 

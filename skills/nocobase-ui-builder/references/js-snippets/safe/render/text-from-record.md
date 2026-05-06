@@ -5,12 +5,14 @@ A render JS model should display one text value from the current record.
 
 ## Do not use when
 The surface should compute and return a value without rendering.
+The code is a standalone popup block that needs the popup opener record; use `scene/block/popup-record-summary`.
 
 ## Surfaces
 - `js-model.render`
 
 ## Required ctx roots
-- `ctx.record`
+- `ctx.libs`
+- `ctx.getVar`
 - `ctx.render`
 
 ## Contract
@@ -22,12 +24,15 @@ The surface should compute and return a value without rendering.
 ## Normalized snippet
 
 ```js
-const text = String(ctx.record?.title ?? ctx.record?.name ?? '-');
-ctx.render(text);
+const { Typography } = ctx.libs.antd;
+const currentRecord = await ctx.getVar('ctx.record');
+const text = String(currentRecord?.title ?? currentRecord?.name ?? '-');
+
+ctx.render(<Typography.Text>{text}</Typography.Text>);
 ```
 
 ## Editable slots
 - Replace `title` and `name` with the record fields to display.
 
 ## Skill-mode notes
-This follows the strict render-model contract: render output must go through `ctx.render(...)`.
+This follows the strict render-model contract: render output must go through Ant Design JSX in `ctx.render(...)`. Use only after `recordSemantic` proves `ctx.record` is the host record.

@@ -4,16 +4,18 @@ This page defines the global contract for `nocobase-ui-builder`. Other reference
 
 ## 0. Canonical Transport
 
-- Canonical front door: `nb api flow-surfaces`
+- Agent-facing front door: `node skills/nocobase-ui-builder/runtime/bin/nb-flow-surfaces.mjs`
+- Backend transport contract: flow-surfaces behind the wrapper
 - Retained `applyBlueprint`, `flowSurfaces:*`, and backend API docs in this skill remain the backend contract and payload reference.
-- `nb-page-preview` and `nb-runjs` remain local helper CLIs only. Invoke them through `node skills/nocobase-ui-builder/runtime/bin/<helper>.mjs` from the repo root, or through the equivalent absolute path; do not probe bare PATH commands first.
+- `nb-runjs`, `nb-template-decision`, and `nb-localized-write-preflight` remain local helper CLIs only. Invoke them through `node skills/nocobase-ui-builder/runtime/bin/<helper>.mjs` from the repo root, or through the equivalent absolute path; do not probe bare PATH commands first.
 - Whole-page `prepare-write` is local/read-only. For the first real whole-page write, it is mandatory, and the sendable business object becomes `result.cliBody`.
+- Whole-page `prepare-write` may normalize shape and compatibility aliases, but it must not silently repair an invalid business-field binding by swapping in a different field. Invalid semantic bindings fail locally instead.
 
 ## 1. Precedence
 
 Rule precedence is always:
 
-1. live `nb api flow-surfaces --help` / live generated CLI behavior
+1. live wrapper help / command behavior and live generated CLI behavior
 2. live backend `applyBlueprint` / `get` / `describeSurface` / `catalog` / `getReactionMeta` / `context` / low-level flow-surfaces write contracts
 3. this `Normative Contract` for global transport, request-shape, and authoring rules
 4. [templates.md](./templates.md) for template-selection semantics
@@ -26,20 +28,20 @@ If a lower-priority local document conflicts with a live contract fact, follow t
 
 ### Default split
 
-- **Whole-page create** -> `nb api flow-surfaces apply-blueprint` -> simplified **page blueprint** -> backend `applyBlueprint(mode="create")` -> successful response; follow-up `get` only when follow-up localized work or explicit inspection needs live structure.
-- **Whole-page replace** -> `nb api flow-surfaces apply-blueprint` -> simplified **page blueprint** -> backend `applyBlueprint(mode="replace")` -> successful response; follow-up `get` only when follow-up localized work or explicit inspection needs live structure.
-- **Whole-page interaction / reaction authoring** -> the same page blueprint with top-level `reaction.items[]` -> `nb api flow-surfaces apply-blueprint` -> successful response; follow-up `get` only when follow-up localized work or explicit inspection needs live structure.
-- **Localized edit on an existing surface** -> matching `nb api flow-surfaces ...` command -> low-level APIs (`compose`, `configure`, `add*`, `move*`, `remove*`, `updateMenu`, `createPage`, etc.) -> readback.
-- **Localized interaction / reaction edit** -> `nb api flow-surfaces get-reaction-meta` -> matching `set*Rules` -> readback.
+- **Whole-page create** -> `node skills/nocobase-ui-builder/runtime/bin/nb-flow-surfaces.mjs apply-blueprint` -> simplified **page blueprint** -> backend `applyBlueprint(mode="create")` -> successful response; follow-up `get` only when follow-up localized work or explicit inspection needs live structure.
+- **Whole-page replace** -> `node skills/nocobase-ui-builder/runtime/bin/nb-flow-surfaces.mjs apply-blueprint` -> simplified **page blueprint** -> backend `applyBlueprint(mode="replace")` -> successful response; follow-up `get` only when follow-up localized work or explicit inspection needs live structure.
+- **Whole-page interaction / reaction authoring** -> the same page blueprint with top-level `reaction.items[]` -> `node skills/nocobase-ui-builder/runtime/bin/nb-flow-surfaces.mjs apply-blueprint` -> successful response; follow-up `get` only when follow-up localized work or explicit inspection needs live structure.
+- **Localized edit on an existing surface** -> matching wrapper `nb-flow-surfaces.mjs` subcommand -> low-level APIs (`compose`, `configure`, `add*`, `move*`, `remove*`, `updateMenu`, `createPage`, etc.) -> readback.
+- **Localized interaction / reaction edit** -> `node skills/nocobase-ui-builder/runtime/bin/nb-flow-surfaces.mjs get-reaction-meta` -> matching `set*Rules` -> readback.
 
-This file keeps backend action names because they are still the stable payload families exposed through `nb api`.
+This file keeps backend action names because they are still the stable payload families exposed through `nb api` behind the wrapper.
 
 ### Whole-page first-write rule
 
 - Whole-page includes whole-page create / replace, one route-backed tab full build, complex multi-block pages, nested-popup pages, and pages with multiple reaction families.
-- Pre-write reads, metadata fetch, preview, and `prepare-write` are allowed, but the first mutating write in the whole-page route must be `nb api flow-surfaces apply-blueprint`.
+- Pre-write reads, metadata fetch, and `prepare-write` are allowed, but the first mutating write in the whole-page route must be `applyBlueprint` through the wrapper `node skills/nocobase-ui-builder/runtime/bin/nb-flow-surfaces.mjs apply-blueprint`, which then sends only the prepared `result.cliBody` to backend `apply-blueprint`.
 - Before one whole-page `applyBlueprint` succeeds, do not use low-level mutating commands such as `createMenu`, `createPage`, `compose`, `configure`, `update-settings`, `add*`, `move*`, `remove*`, or `set*Rules`.
-- If a whole-page `applyBlueprint` fails before first success, repair the blueprint from the error, rerun `prepare-write` and preview, and retry blueprint-only up to 5 rounds. Do not continue with low-level writes during those pre-success retries. After 5 failed rounds, report the latest blueprint / preview / error evidence.
+- If a whole-page `applyBlueprint` fails before first success, repair the blueprint from the error, rerun `prepare-write`, and retry blueprint-only up to 5 rounds. Do not continue with low-level writes during those pre-success retries. After 5 failed rounds, report the latest blueprint / error evidence.
 - After a successful whole-page `applyBlueprint`, localized low-level repair is allowed only for an explicit local/live gap and must stay narrowly scoped.
 
 ### What the public page blueprint is
@@ -53,6 +55,7 @@ The public `applyBlueprint` payload is:
 - written with canonical public names such as `collection`, `associationPathName`, `binding`, `field`, `target`, and `popup`
 - key-oriented only inside the document itself: layout cells use block `key`, and `field.target` is only a string block key in the same tab/popup scope
 - may include top-level `defaults.collections` for collection-level generated-popup defaults: fixed `{ name, description }` `popups.view/addNew/edit` for every involved direct collection, fixed `{ name, description }` `popups.associations.<associationField>.view/addNew/edit` for every involved association scope keyed only by the first relation segment, and optional `defaults.collections.<collection>.fieldGroups` only when one of those generated popup scenes still has more than 10 effective fields; `table` blocks always pull their collection into the `addNew` threshold evaluation
+- generated defaults fieldGroups require one compact self-review before finalizing the blueprint: return a short structured verdict (`approve` or `regenerate`) for semantic grouping, required-field coverage, group balance, and group title specificity; use the lowest practical reasoning effort / no-think mode, do not request chain-of-thought, and regenerate at most once
 - collection-level `fieldGroups` stay keyed only by target collection; relation popup names stay under `popups.associations`, and multiple relation paths to the same target collection reuse one defaults collection entry
 - must not include `defaults.blocks`, and must not put `blocks`, `fields`, `fieldGroups`, layout, or other content inside `defaults.collections.*.popups`
 - if `reaction.items[]` is present, every reaction target must be a same-run local key / bind key, not a live uid
@@ -64,7 +67,7 @@ The public `applyBlueprint` payload is:
 - for `createForm`, `editForm`, and `details`, once a block contains more than 10 real fields, `fieldGroups` is mandatory instead of one flat `fields[]`
 - `fieldGroups` is supported only on `createForm`, `editForm`, and `details`; it must not be combined with `fields[]` or `fieldsLayout`, and manual `divider` items do not satisfy the grouping requirement
 - when the user asks to add filtering/search to a `table`, `list`, `gridCard`, `calendar`, or `kanban` host, use that host's block-level `filter` action by default; reserve `filterForm` for explicit block/form/query-area intent. For public `applyBlueprint`, `compose`, `add-block`, and `add-blocks` authoring, every direct non-template `table` / `list` / `gridCard` / `calendar` / `kanban` block must include a non-empty block-level `defaultFilter`; `{}`, `null`, and `{ logic: "$and", items: [] }` are rejected. Prefer 3 to 4 common business fields when metadata supports them; if fewer than 3 suitable candidates exist, cover every available candidate instead. The `filter` action itself is optional. If `filterableFieldNames` is explicit, check coverage against action-level/defaultActionSettings `defaultFilter` when present, otherwise block-level `defaultFilter`
-- when multiple non-filter blocks share one tab or popup, explicit layout and data-block titles are required there; a scope with only one non-filter block may omit the block `title`
+- when multiple non-filter blocks share one tab or popup, explicit layout is required and each non-template-backed data block needs a `title` there; template-backed blocks are exempt; a scope with only one non-filter block may omit the block `title` unless the user explicitly asks for one
 - if `layout` is present, it must be an object
 - in `create`, any newly created `navigation.group` and any top-level or second-level `navigation.item` must include one valid semantic Ant Design icon
 - when one tab or popup contains multiple non-filter blocks, explicit `layout` is required instead of relying on default top-to-bottom stacking
@@ -79,18 +82,19 @@ The public `applyBlueprint` payload is:
 
 ### nb body rule
 
-For actual execution in this skill:
+For actual execution in this skill, the wrapper is the public entry, and the bullets below describe the raw backend body shape that the wrapper eventually sends:
 
-- `nb api flow-surfaces get` is the common exception: it uses top-level locator flags and no JSON body
+- wrapper `get` is the common exception: it uses top-level locator flags and no JSON body
 - most other body-based `flow-surfaces` commands expect the raw business object through CLI `--body` / `--body-file`
 - for a first whole-page write that already ran `prepare-write`, that raw business object is `result.cliBody`, not the original draft blueprint
 - do **not** stringify the JSON document
 - do **not** wrap it again as `{ values: payload }`
 - do **not** leak helper-envelope fields such as `blueprint`, `templateDecision`, or `collectionMetadata` into the inner page blueprint
+- whole-page `nb-flow-surfaces.mjs apply-blueprint` may receive `collectionMetadata` in the wrapper envelope or `--collection-metadata` file and auto-fetch missing entries during internal prepare-write, but that metadata remains prewrite-only and must not be sent in `result.cliBody`
 
 Important exception:
 
-- `nb api flow-surfaces get` uses top-level locator flags derived from `pageSchemaUid` / `routeId` / `tabSchemaUid` / `uid`
+- wrapper `get` uses top-level locator flags derived from `pageSchemaUid` / `routeId` / `tabSchemaUid` / `uid`
 - for actual invocation templates, treat [tool-shapes.md](./tool-shapes.md) as the primary cookbook; `page-blueprint.md` focuses on the inner page document, not command flags
 
 Correct nb body:
@@ -220,8 +224,8 @@ For `replace` runs:
 - skill-side authoring may omit layout only for scopes with at most one non-filter block; otherwise the draft must decide layout before write
 - in `create`, if an existing menu group is already known, prefer `navigation.group.routeId`; when only `navigation.group.title` is given, applyBlueprint reuses one unique same-title group, creates a new group if none exists, and rejects ambiguous multi-match titles
 - at the skill-authoring layer, if visible same-title menu groups already exist and title lookup would hit multiple groups, do **not** create another same-title group for disambiguation and do **not** choose one locally; require explicit `routeId` before write
-- `navigation.group.routeId` is exact targeting only and must not be mixed with `icon`, `tooltip`, or `hideInMenu`
-- same-title reuse is title-only; if an existing group's metadata must change, use low-level `updateMenu` instead of applyBlueprint create
+- page identity for duplicate-page prevention is `(navigation.group.routeId, page.title)`, after resolving unique group title to routeId. In `create`, same group + same page title may be prepared as `replace` with `target.pageSchemaUid`; different group + same page title does not merge, reuse, or auto-replace another page.
+- `navigation.group.routeId` has highest priority and ignores `title`, `icon`, `tooltip`, and `hideInMenu`; title-based reuse also ignores `icon`, `tooltip`, and `hideInMenu` when an existing group is reused; if an existing group's metadata must change, use low-level `updateMenu` instead of applyBlueprint create
 
 Use the resolved page `target` from the public response as the carry-forward locator. A successful `apply-blueprint` response is the default stop point. Run follow-up `get` only when follow-up localized work or explicit inspection needs live structure.
 
@@ -275,11 +279,11 @@ Field addability rule:
 
 Do not use UI-builder skill docs to invent missing schema. If the requested fields/relations do not exist, hand off to `nocobase-data-modeling`.
 
-## 4. Prewrite Preview + Confirmation Threshold
+## 4. Prewrite Gate + Confirmation Threshold
 
-For any whole-page `applyBlueprint` authoring run, show one ASCII-first preview from the same blueprint before the first write. This preview is mandatory even when execution continues immediately afterward.
+For any whole-page `applyBlueprint` authoring run, the first mutating write must go through the wrapper so the internal prepare-write gate can normalize and validate the draft before backend execution.
 
-Stop after that preview for confirmation when any of the following is true:
+Stop for confirmation before the write when any of the following is true:
 
 - the request is ambiguous
 - the request is destructive or high-impact
@@ -287,7 +291,7 @@ Stop after that preview for confirmation when any of the following is true:
 - data source / popup / tab structure still depends on assumptions
 - the user explicitly asks to review the structure first
 
-Direct execution after the preview is allowed only when all are true:
+Direct execution is allowed only when all are true:
 
 - the target is unique
 - the structure is clear enough to serialize into one page blueprint or one localized low-level write plan

@@ -10,7 +10,8 @@ The status should be written back to a form field; use a linkage snippet instead
 - `js-model.render`
 
 ## Required ctx roots
-- `ctx.record`
+- `ctx.libs`
+- `ctx.getVar`
 - `ctx.render`
 
 ## Contract
@@ -22,9 +23,12 @@ The status should be written back to a form field; use a linkage snippet instead
 ## Normalized snippet
 
 ```js
-const status = String(ctx.record?.status || 'unknown');
+const { Tag } = ctx.libs.antd;
+const currentRecord = await ctx.getVar('ctx.record');
+const status = String(currentRecord?.status || 'unknown');
 const color = status === 'active' ? 'green' : status === 'draft' ? 'blue' : 'default';
-ctx.render(`<span data-color="${color}">${status}</span>`);
+
+ctx.render(<Tag color={color}>{status}</Tag>);
 ```
 
 ## Editable slots
@@ -32,4 +36,4 @@ ctx.render(`<span data-color="${color}">${status}</span>`);
 - Replace the color mapping with the final status values.
 
 ## Skill-mode notes
-Keep this as render-only code. Do not mutate form fields or call action APIs from this snippet.
+Keep this as render-only Ant Design code. Do not mutate form fields or call action APIs from this snippet.

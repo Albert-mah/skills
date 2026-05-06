@@ -4,6 +4,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { maskJavaScriptSource } from '../src/source-mask.js';
 
 const skillRoot = fileURLToPath(new URL('../../', import.meta.url));
 const repoRoot = path.resolve(skillRoot, '..', '..');
@@ -14,6 +15,20 @@ function read(relativePath) {
 
 function assertFileDoesNotContain(relativePath, pattern, message) {
   assert.doesNotMatch(read(relativePath), pattern, message || `${relativePath} should not contain ${pattern}`);
+}
+
+function assertNavigationGroupDocsDoNotKeepOldMetadataRules(relativePath) {
+  const text = read(relativePath);
+  assert.doesNotMatch(
+    text,
+    /title-only (?:unique )?same-title reuse|same-title reuse is title-only|one-match title-only reuse/i,
+    `${relativePath} should not describe existing navigation group reuse as title-only`,
+  );
+  assert.doesNotMatch(
+    text,
+    /navigation\.group\.routeId[\s\S]{0,120}(?:exact targeting only|do not mix|must not be mixed)[\s\S]{0,120}(?:icon|tooltip|hideInMenu)/i,
+    `${relativePath} should not forbid ignored navigation.group metadata when routeId is present`,
+  );
 }
 
 function readRelativeMarkdownLinks(markdown) {
@@ -74,6 +89,31 @@ function extractFirstJsFenceAfterHeading(markdown, heading) {
   return match[2];
 }
 
+function extractJsFenceAfterH2(markdown, heading) {
+  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = markdown.match(new RegExp(`^##\\s+${escaped}\\s*$([\\s\\S]*?)^\\\`\\\`\\\`(?:js|javascript)\\n([\\s\\S]*?)\\n\\\`\\\`\\\``, 'm'));
+  assert.ok(match, `should find js fence after h2 "${heading}"`);
+  return match[2];
+}
+
+function extractH2Section(markdown, heading) {
+  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const headingMatch = markdown.match(new RegExp(`^##\\s+${escaped}\\s*$`, 'm'));
+  assert.ok(headingMatch, `should find h2 section "${heading}"`);
+  const bodyStart = headingMatch.index + headingMatch[0].length;
+  const remaining = markdown.slice(bodyStart);
+  const nextHeading = remaining.match(/^##\s+/m);
+  return nextHeading ? remaining.slice(0, nextHeading.index) : remaining;
+}
+
+function extractFences(markdown, language) {
+  return [...markdown.matchAll(new RegExp(`^\\\`\\\`\\\`${language}\\n([\\s\\S]*?)\\n\\\`\\\`\\\``, 'gm'))].map((match) => match[1]);
+}
+
+function extractCodeFences(markdown) {
+  return [...markdown.matchAll(/^```(?:js|javascript|jsx|json)\n([\s\S]*?)\n```/gm)].map((match) => match[1]);
+}
+
 function validateRunjsSnippet(model, code) {
   const cliPath = path.join(skillRoot, 'runtime/bin/nb-runjs.mjs');
   const result = spawnSync(process.execPath, [cliPath, 'validate', '--stdin-json', '--skill-mode'], {
@@ -85,6 +125,14 @@ function validateRunjsSnippet(model, code) {
   const parsed = JSON.parse(result.stdout);
   assert.equal(parsed.ok, true, `runjs validator should accept ${model}: ${result.stdout}`);
   return parsed;
+}
+
+function assertNoDirectCtxRecordValueReads(code, label) {
+  assert.doesNotMatch(
+    maskJavaScriptSource(code),
+    /\bctx\.record(?:\?\.|\.)/,
+    `${label} should read record values with await ctx.getVar('ctx.record...')`,
+  );
 }
 
 function readYamlDoubleQuotedScalar(yamlText, key) {
@@ -219,6 +267,16 @@ function assertSkillKeepsTemplateRulesMinimal(text) {
     /clarify before writing|do not auto-detach/i,
     'SKILL.md should block automatic detach on unresolved existing-reference scope',
   );
+  assert.match(
+    text,
+    /record[\s\S]{0,160}template-owned[\s\S]{0,180}host\/openView[\s\S]{0,120}separately/i,
+    'SKILL.md should require separate template-owned and host/openView routing records',
+  );
+  assert.match(
+    text,
+    /templateOwnedContentRoute[\s\S]{0,160}hostOpenViewConfigRoute/i,
+    'SKILL.md should name the artifact fields for template-owned and host/openView routing',
+  );
   assert.doesNotMatch(text, /popup\.tryTemplate/i, 'SKILL.md should not restate popup.tryTemplate details');
   assert.doesNotMatch(text, /popup\.saveAsTemplate/i, 'SKILL.md should not restate popup.saveAsTemplate details');
   assert.doesNotMatch(text, /keyword-only search/i, 'SKILL.md should not restate template search heuristics');
@@ -234,13 +292,28 @@ function assertSkillKeepsIntentFirst(text) {
   );
   assert.match(
     text,
-    /localized existing-surface edits[\s\S]{0,160}(?:low-level )?`flow-surfaces`[\s\S]{0,120}\[local-edit-quick\.md\]/i,
-    'SKILL.md should route localized edits through low-level flow-surfaces commands and local-edit-quick.md',
+    /localized existing-surface edits[\s\S]{0,160}`nb-flow-surfaces\.mjs`[\s\S]{0,160}(?:`compose`|`configure`|`add-\*`)[\s\S]{0,160}\[local-edit-quick\.md\]/i,
+    'SKILL.md should route localized edits through nb-flow-surfaces.mjs wrapper subcommands and local-edit-quick.md',
   );
   assert.match(
     text,
-    /reaction work[\s\S]{0,160}`get-reaction-meta`[\s\S]{0,120}`set\*Rules`[\s\S]{0,120}\[reaction-quick\.md\]/i,
-    'SKILL.md should keep reaction work routing visible through reaction-quick.md',
+    /localized existing-surface reaction work[\s\S]{0,160}`get-reaction-meta`[\s\S]{0,120}`set\*Rules`[\s\S]{0,120}\[reaction-quick\.md\]/i,
+    'SKILL.md should keep localized reaction work routing visible through reaction-quick.md',
+  );
+  assert.match(
+    text,
+    /first-pass whole-page[\s\S]{0,160}`?reaction\.items\[\]`?[\s\S]{0,200}(?:no|without)[\s\S]{0,80}`?get-reaction-meta`?/i,
+    'SKILL.md should keep first-pass whole-page reactions in reaction.items[] without live meta',
+  );
+  assert.match(
+    text,
+    /artifact-only localized reaction[\s\S]{0,180}planned `?get-reaction-meta`? probe/i,
+    'SKILL.md should require artifact-only localized reaction drafts to record the planned meta probe',
+  );
+  assert.match(
+    text,
+    /artifact-only locator[\s\S]{0,180}navigation\.routeId[\s\S]{0,160}page\.pageSchemaUid[\s\S]{0,160}liveTargets\[\]\.uid[\s\S]{0,160}non-empty placeholder/i,
+    'SKILL.md should keep artifact-only locator maps as direct fields with non-empty placeholders',
   );
   assert.match(
     text,
@@ -289,6 +362,70 @@ function assertDuplicateMenuGroupNeedsRouteId(text, sourceLabel) {
   );
 }
 
+function assertSharedMenuGroupMultiPageRunsAreSerialized(text, sourceLabel) {
+  assert.match(
+    text,
+    /(?:multiple|several|multi-page|多个|多页面)[\s\S]{0,220}(?:same|shared|同一|共享)[\s\S]{0,160}(?:navigation\.group\.title|menu group|菜单组|group title)/i,
+    `${sourceLabel} should identify multi-page requests that share one menu group title`,
+  );
+  assert.match(
+    text,
+    /(?:serial|sequential|ordered|串行|顺序)[\s\S]{0,200}(?:applyBlueprint|single-page runs|page runs|页面)/i,
+    `${sourceLabel} should require serialized page creation for shared menu-group multi-page runs`,
+  );
+  assert.match(
+    text,
+    /(?:first|first page|第一页|首个页面)[\s\S]{0,220}(?:title|navigation\.group\.title)[\s\S]{0,260}(?:routeId|response|desktopRoutes|响应)/i,
+    `${sourceLabel} should allow the first shared-group page to create or resolve the group and capture routeId`,
+  );
+  assert.match(
+    text,
+    /(?:subsequent|later|remaining|后续|其余)[\s\S]{0,220}(?:navigation\.group[\s\S]{0,80}\{\s*["']?routeId|routeId)[\s\S]{0,220}(?:not|never|不要|不得|禁止)[\s\S]{0,120}(?:title-only|title only|只用 title|navigation\.group\.title)/i,
+    `${sourceLabel} should require later shared-group pages to use the captured routeId instead of title-only creation`,
+  );
+  assert.match(
+    text,
+    /(?:parallel|concurrent|并发|同时)[\s\S]{0,180}(?:title-only|navigation\.group\.title|same-title|同名|共享 group|共享菜单组)[\s\S]{0,180}(?:forbid|forbidden|prohibit|禁止|不得|do not|never)/i,
+    `${sourceLabel} should explicitly forbid concurrent title-only shared-group creates`,
+  );
+}
+
+function assertSameGroupSameTitlePageIdentityRule(text, sourceLabel) {
+  assert.match(
+    text,
+    /(?:page identity|same page|duplicate page|same-title page|页面身份|同一个页面|重复页面)[\s\S]{0,220}(?:navigation\.group\.routeId|menu group routeId|group routeId|菜单组[\s\S]{0,40}routeId)[\s\S]{0,220}(?:page\.title|page title|页面标题)/i,
+    `${sourceLabel} should define page identity as menu group routeId plus page title`,
+  );
+  assert.match(
+    text,
+    /(?:same group|same menu group|同一菜单组|同组)[\s\S]{0,160}(?:same title|same page title|同名|相同标题)[\s\S]{0,220}(?:replace|`replace`|mode[\s\S]{0,40}replace|自动替换)/i,
+    `${sourceLabel} should say same-group same-title create upgrades to replace`,
+  );
+  assert.match(
+    text,
+    /(?:different group|different menu group|跨菜单组|不同菜单组|不同组)[\s\S]{0,180}(?:same title|same page title|同名|相同标题)[\s\S]{0,220}(?:not|do not|does not|不要|不应|不能)[\s\S]{0,100}(?:replace|merge|合并|替换|reuse|复用)/i,
+    `${sourceLabel} should say different-group same-title pages do not auto-replace or merge`,
+  );
+}
+
+function assertTitleOmissionRule(text, sourceLabel) {
+  assert.match(
+    text,
+    /multiple non-filter blocks[\s\S]{0,260}(?:non-template-backed|template-backed[\s\S]{0,80}exempt|each data block needs|each data block has|each data block should have)[\s\S]{0,160}`?title`?/i,
+    `${sourceLabel} should say multi-block scopes need non-template-backed data-block titles`,
+  );
+  assert.match(
+    text,
+    /template-backed blocks?[\s\S]{0,120}(?:exempt|exception|may omit|do not need|不需要|豁免)/i,
+    `${sourceLabel} should preserve the template-backed multi-block title exception`,
+  );
+  assert.match(
+    text,
+    /(?:single non-filter block|scope with only one non-filter block)[\s\S]{0,180}(?:may|can) omit[\s\S]{0,120}(?:its )?(?:block )?`?title`?[\s\S]{0,120}(?:unless|except when)[\s\S]{0,80}(?:user|explicitly)[\s\S]{0,80}(?:asks|asked|requests|requested)/i,
+    `${sourceLabel} should allow single-block scopes to omit the title while preserving the explicit user-request override`,
+  );
+}
+
 function assertWholePageFirstWriteGuardrails(text, sourceLabel) {
   assert.match(
     text,
@@ -302,7 +439,7 @@ function assertWholePageFirstWriteGuardrails(text, sourceLabel) {
   );
   assert.match(
     text,
-    /(?:pre-write reads|reads)[\s\S]{0,80}metadata fetch[\s\S]{0,80}preview[\s\S]{0,80}prepare-write[\s\S]{0,80}(?:allowed|ok)/i,
+    /(?:pre-write reads|reads)[\s\S]{0,80}metadata fetch[\s\S]{0,80}prepare-write[\s\S]{0,80}(?:allowed|ok)/i,
     `${sourceLabel} should allow read-only prep work before the first mutating write`,
   );
   assert.match(
@@ -312,8 +449,8 @@ function assertWholePageFirstWriteGuardrails(text, sourceLabel) {
   );
   assert.match(
     text,
-    /`?applyBlueprint`?[\s\S]{0,120}fail(?:s|ure)?[\s\S]{0,220}repair[\s\S]{0,120}prepare-write[\s\S]{0,80}preview[\s\S]{0,120}retry[\s\S]{0,80}(?:5|five)|repair[\s\S]{0,120}prepare-write[\s\S]{0,80}preview[\s\S]{0,120}retry[\s\S]{0,120}`?applyBlueprint`?[\s\S]{0,80}(?:5|five)/i,
-    `${sourceLabel} should repair the blueprint, rerun prepare-write/preview, and retry up to 5 rounds on pre-success applyBlueprint failure`,
+    /`?applyBlueprint`?[\s\S]{0,120}fail(?:s|ure)?[\s\S]{0,220}repair[\s\S]{0,120}prepare-write[\s\S]{0,120}retry[\s\S]{0,80}(?:5|five)|repair[\s\S]{0,120}prepare-write[\s\S]{0,120}retry[\s\S]{0,120}`?applyBlueprint`?[\s\S]{0,80}(?:5|five)/i,
+    `${sourceLabel} should repair the blueprint, rerun prepare-write, and retry up to 5 rounds on pre-success applyBlueprint failure`,
   );
   assert.match(
     text,
@@ -335,8 +472,8 @@ function assertWholePageFirstWriteGuardrails(text, sourceLabel) {
 function assertOpenAIGuardrails(text) {
   assert.match(
     text,
-    /localized edits[\s\S]{0,80}(?:low-level )?`flow-surfaces`/i,
-    'openai prompt should keep localized low-level flow-surfaces routing visible',
+    /localized edits[\s\S]{0,80}(?:flow-surfaces wrapper|wrapper|nb-flow-surfaces)/i,
+    'openai prompt should keep localized wrapper routing visible',
   );
   assert.match(text, /routeId/i, 'openai prompt should keep routeId guidance for existing groups');
   assert.match(
@@ -348,6 +485,16 @@ function assertOpenAIGuardrails(text) {
     text,
     /Duplicate group titles[\s\S]{0,40}routeId|same-title[\s\S]{0,80}routeId/i,
     'openai prompt should require explicit routeId for duplicate same-title groups',
+  );
+  assert.match(
+    text,
+    /same-group[\s\S]{0,80}same-title[\s\S]{0,80}replace|page identity[\s\S]{0,80}routeId[\s\S]{0,80}page title/i,
+    'openai prompt should keep same-group same-title page replacement guidance visible',
+  );
+  assert.match(
+    text,
+    /different-group[\s\S]{0,80}same-title[\s\S]{0,80}(?:not|no)[\s\S]{0,80}(?:replace|merge|reuse)/i,
+    'openai prompt should keep different-group same-title non-merge guidance visible',
   );
   assert.match(
     text,
@@ -428,7 +575,7 @@ function assertOpenAIGuardrails(text) {
   );
   assert.match(
     text,
-    /reads\/metadata\/preview\/prepare-write ok|reads[\s\S]{0,32}metadata[\s\S]{0,32}preview[\s\S]{0,32}prepare-write[\s\S]{0,32}ok/i,
+    /reads\/metadata\/prepare-write ok|reads[\s\S]{0,32}metadata[\s\S]{0,32}prepare-write[\s\S]{0,32}ok/i,
     'openai prompt should allow read-only prep before the first mutating write',
   );
   assert.match(
@@ -438,8 +585,8 @@ function assertOpenAIGuardrails(text) {
   );
   assert.match(
     text,
-    /fail->repair\+prepare\/preview\+retry<=5/i,
-    'openai prompt should repair, rerun prepare-write/preview, and retry up to 5 rounds on applyBlueprint failure',
+    /fail->repair\+prepare-write\+retry<=5/i,
+    'openai prompt should repair, rerun prepare-write, and retry up to 5 rounds on applyBlueprint failure',
   );
   assert.match(
     text,
@@ -459,7 +606,6 @@ test('required docs and relative links stay valid', () => {
     'SKILL.md',
     'agents/openai.yaml',
     'references/aliases.md',
-    'references/ascii-preview.md',
     'references/boundary-quick.md',
     'references/blocks/chart.md',
     'references/blocks/index.md',
@@ -533,20 +679,40 @@ test('upstream js snapshot relative links stay valid', () => {
 
 test('docs keep canonical nb boundaries', () => {
   const skill = read('SKILL.md');
-  assert.match(skill, /Canonical transport is `nb api flow-surfaces`/);
-  assert.match(skill, /nb api flow-surfaces apply-blueprint/);
-  assert.match(skill, /nb api flow-surfaces get-reaction-meta/);
+  assert.match(skill, /Agent-facing front door is `node skills\/nocobase-ui-builder\/runtime\/bin\/nb-flow-surfaces\.mjs`/);
+  assert.match(skill, /Internal backend transport contract remains `?flow-surfaces`?/);
+  assert.match(skill, /nb-flow-surfaces\.mjs apply-blueprint/);
+  assert.match(skill, /nb-flow-surfaces\.mjs get-reaction-meta/);
   assert.match(skill, /prepare-write/i);
   assert.doesNotMatch(skill, /nocobase-ctl|MCP fallback|flow_surfaces_|requestBody|collections:get/i);
 
   const pageBlueprint = read('references/page-blueprint.md');
-  assert.match(pageBlueprint, /Canonical front door is `nb api flow-surfaces apply-blueprint`/);
-  assert.match(pageBlueprint, /nb raw body/i);
+  assert.match(pageBlueprint, /Agent-facing front door is `node skills\/nocobase-ui-builder\/runtime\/bin\/nb-flow-surfaces\.mjs apply-blueprint`/);
+  assert.match(pageBlueprint, /wrapper raw body/i);
   assert.match(pageBlueprint, /Do not wrap that object again/i);
+
+  const normativeContract = read('references/normative-contract.md');
+  assert.match(normativeContract, /Agent-facing front door: `node skills\/nocobase-ui-builder\/runtime\/bin\/nb-flow-surfaces\.mjs`/);
+  assert.match(normativeContract, /Backend transport contract: flow-surfaces behind the wrapper/);
+  assert.match(normativeContract, /wrapper `node skills\/nocobase-ui-builder\/runtime\/bin\/nb-flow-surfaces\.mjs apply-blueprint`/);
+
+  const templates = read('references/templates.md');
+  assert.match(templates, /Agent-facing front door is `node skills\/nocobase-ui-builder\/runtime\/bin\/nb-flow-surfaces\.mjs`/);
+  assert.match(templates, /raw business object/i);
+
+  const reaction = read('references/reaction.md');
+  assert.match(reaction, /Agent-facing front door is `node skills\/nocobase-ui-builder\/runtime\/bin\/nb-flow-surfaces\.mjs`/);
+  assert.match(reaction, /nb-flow-surfaces\.mjs apply-blueprint/);
+  assert.match(reaction, /nb-flow-surfaces\.mjs get-reaction-meta/);
+
+  const settings = read('references/settings.md');
+  assert.match(settings, /Agent-facing front door is `node skills\/nocobase-ui-builder\/runtime\/bin\/nb-flow-surfaces\.mjs`/);
+  assert.match(settings, /nb-flow-surfaces\.mjs set-layout/);
+  assert.match(settings, /nb-flow-surfaces\.mjs set-event-flows/);
 
   const toolShapes = read('references/tool-shapes.md');
   assert.match(toolShapes, /Do not wrap it again/i);
-  assert.match(toolShapes, /`nb api flow-surfaces get` is the common exception: it uses top-level locator flags and no JSON body/i);
+  assert.match(toolShapes, /wrapper `?get`? is the common exception: it uses top-level locator flags and no JSON body/i);
   assert.doesNotMatch(toolShapes, /MCP fallback|requestBody|flow_surfaces_|collections:get/i);
   assert.doesNotMatch(
     toolShapes,
@@ -554,10 +720,10 @@ test('docs keep canonical nb boundaries', () => {
     'tool-shapes should not present wrapped { blueprint: ... } bodies as canonical nb request bodies',
   );
 
-  const asciiPreview = read('references/ascii-preview.md');
-  assert.match(asciiPreview, /\{\s*blueprint,\s*templateDecision\?,\s*collectionMetadata\?\s*\}/i);
-  assert.match(asciiPreview, /normalized `templateDecision`/i);
-  assert.doesNotMatch(asciiPreview, /requestBody|tool-call envelope/i);
+  const helperContracts = read('references/helper-contracts.md');
+  assert.match(helperContracts, /\{\s*blueprint,\s*templateDecision\?,\s*collectionMetadata\?\s*\}/i);
+  assert.match(helperContracts, /prepared `?cliBody`?/i);
+  assert.doesNotMatch(helperContracts, /requestBody|tool-call envelope/i);
 });
 
 test('public ui-builder docs do not expose old ctl or MCP transport contracts', () => {
@@ -634,9 +800,11 @@ test('js surface docs stay discoverable and keep progressive disclosure', () => 
 
   const jsModelRender = read('references/js-surfaces/js-model-render.md');
   assert.match(jsModelRender, /ctx\.render\(\.\.\.\).*required|required.*ctx\.render/i, 'js-model-render doc should require ctx.render');
+  assert.match(jsModelRender, /popup-opener-record[\s\S]{0,160}ctx\.popup\.record/i, 'js-model-render doc should route popup opener records to ctx.popup.record');
 
   const jsModelAction = read('references/js-surfaces/js-model-action.md');
   assert.match(jsModelAction, /clickSettings\.runJs/i, 'js-model-action doc should expose action write path');
+  assert.match(jsModelAction, /inner-row-record[\s\S]{0,180}ctx\.getVar\('ctx\.record/i, 'js-model-action doc should distinguish popup inner row record from popup opener record');
 
   const legacyIndex = read('references/js-models/index.md');
   assert.match(legacyIndex, /legacy/i, 'js-models/index should mark itself as a legacy entrypoint');
@@ -650,6 +818,12 @@ test('js surface docs stay discoverable and keep progressive disclosure', () => 
   const catalog = JSON.parse(read('references/js-snippets/catalog.json'));
   const safeIds = new Set(catalog.snippets.filter((entry) => entry.tier === 'safe').map((entry) => entry.id));
   const manifest = JSON.parse(read('references/js-surfaces/snippet-manifest.json'));
+  const renderSurface = manifest.surfaces.find((surface) => surface.id === 'js-model.render');
+  assert.deepEqual(
+    renderSurface?.recommendedBySceneHint?.popup,
+    ['scene/block/popup-record-summary'],
+    'js-model.render should recommend the popup record snippet for popup scenes',
+  );
   for (const surface of manifest.surfaces) {
     assert.equal(surface.recommendedSnippetIds.length <= 3, true, `${surface.id} should recommend at most 3 snippets`);
     for (const snippetId of surface.recommendedSnippetIds) {
@@ -661,6 +835,81 @@ test('js surface docs stay discoverable and keep progressive disclosure', () => 
       surface.recommendedSnippetIds,
       `${surface.id} surface doc should keep first-hop snippets in exact manifest order`,
     );
+  }
+});
+
+test('legacy js-model render docs keep Ant Design-first defaults', () => {
+  const renderLeafDefaults = [
+    ['references/js-models/js-block.md', '默认写法'],
+    ['references/js-models/js-column.md', '默认写法'],
+    ['references/js-models/js-field.md', '只读默认写法'],
+    ['references/js-models/js-editable-field.md', '默认写法'],
+    ['references/js-models/js-item.md', '默认写法'],
+    ['references/js-models/rendering-contract.md', '默认模板'],
+  ];
+
+  for (const [relativePath, heading] of renderLeafDefaults) {
+    const defaultSection = extractH2Section(read(relativePath), heading);
+    const defaultExamples = extractCodeFences(defaultSection);
+    assert.ok(defaultExamples.length > 0, `${relativePath} default render section should include code examples`);
+    assert.equal(
+      defaultExamples.some((example) => /ctx\.libs\.antd|ctx\.libs\.antdIcons/.test(example)),
+      true,
+      `${relativePath} default render section should use Ant Design libraries`,
+    );
+    for (const defaultExample of defaultExamples) {
+      assert.doesNotMatch(defaultExample, /ctx\.render\s*\(\s*(?:'|"|`)\s*</, `${relativePath} default render example should not render an HTML string`);
+      assert.doesNotMatch(defaultExample, /\b(?:document\.createElement|ctx\.element\.innerHTML)\b/, `${relativePath} default render example should not default to DOM construction`);
+    }
+  }
+
+  const runjsOverview = read('references/js-models/runjs-overview.md');
+  assert.match(
+    runjsOverview,
+    /渲染型 JS model 默认优先使用 `ctx\.libs\.antd` \/ `ctx\.libs\.antdIcons`/,
+    'runjs overview should state the Ant Design-first render policy',
+  );
+  assert.doesNotMatch(
+    runjsOverview,
+    /页面内渲染\s*\|\s*`ctx\.render\(<div \/>`\s*或/i,
+    'runjs overview should not keep bare div rendering as a default table entry',
+  );
+
+  for (const relativePath of walkMarkdownFiles('references/js-models')) {
+    for (const jsonFence of extractFences(read(relativePath), 'json')) {
+      assert.doesNotThrow(
+        () => JSON.parse(jsonFence),
+        `${relativePath} should keep json fences parseable`,
+      );
+    }
+  }
+});
+
+test('RunJS authoring docs require record semantic selection before code generation', () => {
+  const js = read('references/js.md');
+  const loop = read('references/runjs-authoring-loop.md');
+  const blockTextSummary = read('references/js-snippets/safe/scene/block/text-summary.md');
+  const textFromRecord = read('references/js-snippets/safe/render/text-from-record.md');
+
+  assert.match(js, /recordSemantic/i, 'js.md should require recording the selected record semantic');
+  assert.match(js, /contextEvidence/i, 'js.md should require evidence for context root choices');
+  assert.match(loop, /recordSemantic/i, 'runjs-authoring-loop should include recordSemantic in the scenario card');
+  assert.match(loop, /contextEvidence/i, 'runjs-authoring-loop should include contextEvidence in the scenario card');
+  assert.match(loop, /popup-opener-record[\s\S]{0,180}ctx\.popup\.record/i, 'runjs authoring loop should map popup opener record to ctx.popup.record');
+  assert.match(loop, /inner-row-record[\s\S]{0,200}ctx\.getVar\('ctx\.record/i, 'runjs authoring loop should route inner row records through ctx.getVar');
+  assert.match(blockTextSummary, /Do not use[\s\S]{0,220}popup/i, 'block text-summary snippet should not be used for popup opener records');
+  assert.match(textFromRecord, /Do not use[\s\S]{0,220}popup/i, 'text-from-record snippet should not be used for popup opener records');
+});
+
+test('safe RunJS snippets read record values through ctx.getVar', () => {
+  const catalog = JSON.parse(read('references/js-snippets/catalog.json'));
+  const safeEntries = catalog.snippets.filter((entry) => entry.tier === 'safe');
+  assert.ok(safeEntries.length > 0, 'safe snippet catalog should not be empty');
+
+  for (const entry of safeEntries) {
+    const markdown = read(`references/${entry.doc}`);
+    const code = extractJsFenceAfterH2(markdown, 'Normalized snippet');
+    assertNoDirectCtxRecordValueReads(code, `${entry.id} normalized snippet`);
   }
 });
 
@@ -721,9 +970,14 @@ test('event-flow JS write contract stays discoverable across routing docs', () =
     /pageSchemaUid[\s\S]{0,160}(catalog|context|get-reaction-meta|compose|configure|add\*|remove\*)/i,
     'runtime-playbook should require pageSchemaUid/live uid normalization before localized follow-up reads and writes',
   );
+  assert.match(
+    runtime,
+    /locator-map\.json[\s\S]{0,160}navigation[\s\S]{0,80}routeId[\s\S]{0,160}page[\s\S]{0,80}pageSchemaUid[\s\S]{0,160}liveTargets[\s\S]{0,80}uid/i,
+    'runtime-playbook should show the artifact-only locator map shape with direct navigation/page/liveTargets fields',
+  );
 
   const crosswalk = read('references/transport-crosswalk.md');
-  assert.match(crosswalk, /nb api flow-surfaces set-event-flows/i, 'transport-crosswalk should expose nb command for set-event-flows');
+  assert.match(crosswalk, /set-event-flows/i, 'transport-crosswalk should expose the wrapper subcommand for set-event-flows');
 
   const settings = read('references/settings.md');
   assert.match(settings, /Event-flow Replacement/i, 'settings.md should document event-flow replacement explicitly');
@@ -834,7 +1088,8 @@ test('template selection stays centralized and prompt keeps minimum guardrails',
 
   const openaiYaml = read('agents/openai.yaml');
   const defaultPrompt = readYamlDoubleQuotedScalar(openaiYaml, 'default_prompt');
-  assert.match(defaultPrompt, /Canonical front door: `nb api flow-surfaces`/);
+  assert.match(defaultPrompt, /Front door: `nb-flow-surfaces\.mjs`/);
+  assert.doesNotMatch(defaultPrompt, /nb api flow-surfaces/i);
   assert.match(defaultPrompt, /Intent-first/i);
   assert.match(defaultPrompt, /Repeat-eligible(?: scenes)?/i);
   assert.match(defaultPrompt, /local customization/i);
@@ -938,6 +1193,26 @@ test('data-surface docs require block-level defaultFilter while keeping filter a
   const helperContracts = read('references/helper-contracts.md');
   assert.match(helperContracts, /\{\}[\s\S]{0,80}`?null`?[\s\S]{0,80}logic:\s*"\$and"[\s\S]{0,80}items:\s*\[\][\s\S]{0,80}rejected/i);
   assert.match(helperContracts, /filterableFieldNames[\s\S]{0,160}settings\.defaultFilter[\s\S]{0,120}otherwise[\s\S]{0,80}block-level `?defaultFilter`?/i);
+  assert.match(
+    helperContracts,
+    /sortable public blocks[\s\S]{0,160}table[\s\S]{0,80}details[\s\S]{0,80}list[\s\S]{0,80}tree[\s\S]{0,80}kanban[\s\S]{0,80}gridCard[\s\S]{0,80}map[\s\S]{0,160}settings\.sort[\s\S]{0,80}settings\.sorting/i,
+    'helper-contracts should scope sort alias normalization to sortable public blocks',
+  );
+  assert.match(
+    helperContracts,
+    /calendar[\s\S]{0,120}(?:not normalized|left unchanged)/i,
+    'helper-contracts should state calendar sort aliases are not normalized',
+  );
+  assert.match(
+    helperContracts,
+    /relation field popup[\s\S]{0,180}details[\s\S]{0,80}editForm[\s\S]{0,120}currentRecord/i,
+    'helper-contracts should document relation popup resource bindings',
+  );
+  assert.match(
+    helperContracts,
+    /relation (?:tables\/lists\/cards|`table` \/ `list` \/ `gridCard` blocks)[\s\S]{0,120}associatedRecords[\s\S]{0,120}associationField/i,
+    'helper-contracts should document associatedRecords relation popup bindings',
+  );
 
   const normativeContract = read('references/normative-contract.md');
   assert.match(normativeContract, /direct\s+non-template[\s\S]{0,140}table[\s\S]{0,80}list[\s\S]{0,80}gridCard[\s\S]{0,80}calendar[\s\S]{0,80}kanban[\s\S]{0,120}defaultFilter/i);
@@ -948,6 +1223,13 @@ test('data-surface docs require block-level defaultFilter while keeping filter a
   assert.match(defaultPrompt, /hostBound搜索\/filter[\s\S]{0,30}sameHost[\s\S]{0,30}filterAction/i);
   assert.match(defaultPrompt, /defaultFilter[\s\S]{0,24}(?:required|must)|(?:required|must)[\s\S]{0,24}defaultFilter/i);
   assert.match(defaultPrompt, /filterAction[\s\S]{0,24}optional|optional[\s\S]{0,24}filterAction/i);
+});
+
+test('gridCard reference documents public settings.columns without removed column count alias', () => {
+  const gridCardReference = read('references/blocks/grid-card.md');
+  const removedGridCardSetting = ['column', 'Count'].join('');
+  assert.doesNotMatch(gridCardReference, new RegExp(removedGridCardSetting, 'i'));
+  assert.match(gridCardReference, /settings[\s\S]{0,120}"columns"|"columns"[\s\S]{0,120}settings/i);
 });
 
 test('kanban routing docs distinguish analytics dashboards from KanbanBlockModel cues', () => {
@@ -1062,7 +1344,7 @@ test('whole-page satellite docs do not preserve pre-success low-level fallback w
     );
     assert.match(
       text,
-      /(?:first|首次|single-shot)?[\s\S]{0,120}`?applyBlueprint`?[\s\S]{0,180}(?:fail|失败)[\s\S]{0,180}(?:repair|修正|修复)[\s\S]{0,120}(?:prepare-write|preview)[\s\S]{0,120}(?:retry|重试)[\s\S]{0,80}(?:5|五)|(?:repair|修正|修复)[\s\S]{0,120}(?:prepare-write|preview)[\s\S]{0,120}(?:retry|重试)[\s\S]{0,120}`?applyBlueprint`?[\s\S]{0,80}(?:5|五)/i,
+      /(?:first|首次|single-shot)?[\s\S]{0,120}`?applyBlueprint`?[\s\S]{0,180}(?:fail|失败)[\s\S]{0,180}(?:repair|修正|修复)[\s\S]{0,120}prepare-write[\s\S]{0,120}(?:retry|重试)[\s\S]{0,80}(?:5|五)|(?:repair|修正|修复)[\s\S]{0,120}prepare-write[\s\S]{0,120}(?:retry|重试)[\s\S]{0,120}`?applyBlueprint`?[\s\S]{0,80}(?:5|五)/i,
       `${relativePath} should repair and retry up to 5 rounds on pre-success applyBlueprint failure`,
     );
     assert.match(
@@ -1082,14 +1364,60 @@ test('duplicate same-title menu-group docs consistently require explicit routeId
   for (const relativePath of [
     'SKILL.md',
     'references/whole-page-quick.md',
+    'references/page-blueprint.md',
     'references/page-intent.md',
     'references/normative-contract.md',
-    'references/ascii-preview.md',
     'references/verification.md',
     'references/tool-shapes.md',
   ]) {
     assertDuplicateMenuGroupNeedsRouteId(read(relativePath), relativePath);
+    assertNavigationGroupDocsDoNotKeepOldMetadataRules(relativePath);
   }
+});
+
+test('multi-page shared menu-group docs require serialized routeId handoff', () => {
+  for (const relativePath of [
+    'SKILL.md',
+    'references/whole-page-quick.md',
+    'references/execution-checklist.md',
+  ]) {
+    assertSharedMenuGroupMultiPageRunsAreSerialized(read(relativePath), relativePath);
+  }
+});
+
+test('same-group same-title page docs require replace and cross-group isolation', () => {
+  for (const relativePath of [
+    'SKILL.md',
+    'references/whole-page-quick.md',
+    'references/page-blueprint.md',
+    'references/page-intent.md',
+    'references/normative-contract.md',
+    'references/execution-checklist.md',
+    'references/verification.md',
+  ]) {
+    assertSameGroupSameTitlePageIdentityRule(read(relativePath), relativePath);
+  }
+});
+
+test('title omission docs keep single-block scopes title-optional and multi-block scopes titled', () => {
+  for (const relativePath of [
+    'SKILL.md',
+    'references/whole-page-quick.md',
+    'references/page-blueprint.md',
+    'references/normative-contract.md',
+    'references/page-intent.md',
+    'references/execution-checklist.md',
+    'references/tool-shapes.md',
+  ]) {
+    assertTitleOmissionRule(read(relativePath), relativePath);
+  }
+
+  const openaiPrompt = readYamlDoubleQuotedScalar(read('agents/openai.yaml'), 'default_prompt');
+  assert.match(
+    openaiPrompt,
+    /multi-non-filter(?: explicit)? keyed layout\/titles[\s\S]{0,60}(?:except templates|template-backed exempt|templates exempt)[\s\S]{0,80}single non-filter(?: block)?(?: title)?[\s\S]{0,80}(?:optional|may omit title)[\s\S]{0,80}(?:unless user asks|unless explicitly asked|unless asked)/i,
+    'openai prompt should keep the multi-block template exception plus title-optional single-block rule and explicit-request override visible',
+  );
 });
 
 test('quick route docs stay discoverable and point to the deeper references', () => {
@@ -1118,12 +1446,26 @@ test('quick route docs stay discoverable and point to the deeper references', ()
   assert.match(wholePageQuick, /\[template-quick\.md\]/i);
   assert.match(wholePageQuick, /\.artifacts\/nocobase-ui-builder/i);
   assert.match(wholePageQuick, /blueprint\.json/i);
-  assert.match(wholePageQuick, /prewrite-preview\.txt/i);
   assert.match(wholePageQuick, /readback-checklist\.md/i);
   assert.match(
     wholePageQuick,
     /artifact-only tasks|normal local drafting|do not enumerate the skill directory/i,
     'whole-page-quick should keep common-case drafting on the quick route',
+  );
+  assert.match(
+    wholePageQuick,
+    /blueprint\.json[\s\S]{0,160}(?:must be|is)[\s\S]{0,160}(?:bare|direct|root)[\s\S]{0,160}`?tabs\[\]`?/i,
+    'whole-page-quick should require artifact-only blueprint.json to be the direct blueprint root with tabs[]',
+  );
+  assert.match(
+    wholePageQuick,
+    /locator-map\.json[\s\S]{0,180}"navigation"\s*:\s*\{\s*"routeId"[\s\S]{0,180}"page"\s*:\s*\{\s*"pageSchemaUid"[\s\S]{0,180}"liveTargets"[\s\S]{0,80}"uid"/i,
+    'whole-page-quick should show the direct artifact-only locator-map shape',
+  );
+  assert.match(
+    wholePageQuick,
+    /liveTargets\[\]\.uid[\s\S]{0,160}non-empty placeholder[\s\S]{0,120}not `?null`?/i,
+    'whole-page-quick should require non-empty live target placeholders instead of null',
   );
   assert.match(
     wholePageQuick,
@@ -1152,7 +1494,7 @@ test('quick route docs stay discoverable and point to the deeper references', ()
   );
   assert.match(
     wholePageQuick,
-    /first mutating write[\s\S]{0,120}`?applyBlueprint`?|`?applyBlueprint`?[\s\S]{0,160}fail(?:s|ure)?[\s\S]{0,220}repair[\s\S]{0,120}prepare-write[\s\S]{0,80}preview[\s\S]{0,120}retry[\s\S]{0,80}(?:5|five)|after one successful whole-page `?applyBlueprint`?[\s\S]{0,180}(?:localized|residual local\/live gap)/i,
+    /first mutating write[\s\S]{0,120}`?applyBlueprint`?|`?applyBlueprint`?[\s\S]{0,160}fail(?:s|ure)?[\s\S]{0,220}repair[\s\S]{0,120}prepare-write[\s\S]{0,120}retry[\s\S]{0,80}(?:5|five)|after one successful whole-page `?applyBlueprint`?[\s\S]{0,180}(?:localized|residual local\/live gap)/i,
     'whole-page-quick should keep the first-write and post-success repair policy visible',
   );
   assert.match(
@@ -1222,6 +1564,21 @@ test('quick route docs stay discoverable and point to the deeper references', ()
     reactionQuick,
     /Whole-page-first rule|for whole-page create \/ replace, prefer top-level `?reaction\.items\[\]`?/i,
     'reaction-quick should treat first-pass whole-page reactions as the default route',
+  );
+  assert.match(
+    reactionQuick,
+    /whole-page[\s\S]{0,220}`?reaction\.items\[\]`?[\s\S]{0,200}(?:no|without)[\s\S]{0,80}`?get-reaction-meta`?/i,
+    'reaction-quick should keep whole-page first-pass reactions off live meta probes',
+  );
+  assert.match(
+    reactionQuick,
+    /"metaProbe"[\s\S]{0,120}"operation"\s*:\s*"get-reaction-meta"[\s\S]{0,220}"requiredKinds"[\s\S]{0,220}"requiredSourcePaths"/i,
+    'reaction-quick should show a structured artifact-only metaProbe contract',
+  );
+  assert.match(
+    reactionQuick,
+    /artifact-only localized[\s\S]{0,260}(?:no|do not invent)[\s\S]{0,120}(?:live `?uid`?|fingerprint)/i,
+    'reaction-quick should forbid invented live uids/fingerprints in artifact-only localized drafts',
   );
   assert.match(
     reactionQuick,
@@ -1340,41 +1697,78 @@ test('quick route docs stay discoverable and point to the deeper references', ()
   const templateQuick = read('references/template-quick.md');
   assert.match(templateQuick, /\[templates\.md\]/i);
   assert.match(templateQuick, /page-scoped wording/i);
+  assert.match(templateQuick, /"autoDetachToCopy"\s*:\s*false/i);
+  assert.match(templateQuick, /"needsClarification"\s*:\s*true/i);
+  assert.match(templateQuick, /"templateOwnedContentRoute"/i);
+  assert.match(templateQuick, /"hostOpenViewConfigRoute"/i);
 
   const helperContracts = read('references/helper-contracts.md');
   assert.match(helperContracts, /real write|prewrite-validation/i);
   assert.match(helperContracts, /common-case drafting|not the default first stop/i);
   assert.match(helperContracts, /prepare-write/i);
-  assert.match(helperContracts, /prepareApplyBlueprintRequest/i);
   assert.match(helperContracts, /nb-runjs/i);
   assert.match(helperContracts, /nb-localized-write-preflight/i);
   assert.match(helperContracts, /does not execute `?nb`?|does not wrap the transport|local\/read-only/i);
-  assert.match(helperContracts, /node skills\/nocobase-ui-builder\/runtime\/bin\/nb-page-preview\.mjs/i);
+  assert.match(helperContracts, /node skills\/nocobase-ui-builder\/runtime\/bin\/nb-flow-surfaces\.mjs/i);
   assert.match(helperContracts, /node skills\/nocobase-ui-builder\/runtime\/bin\/nb-runjs\.mjs/i);
   assert.match(helperContracts, /node skills\/nocobase-ui-builder\/runtime\/bin\/nb-localized-write-preflight\.mjs/i);
-  assert.doesNotMatch(helperContracts, /- CLI:\s*`nb-page-preview\b/i);
   assert.doesNotMatch(helperContracts, /- CLI:\s*`nb-runjs\b/i);
 
   const cliTransport = read('references/cli-transport.md');
+  assert.match(cliTransport, /nb-flow-surfaces\.mjs/i);
   assert.match(cliTransport, /node skills\/nocobase-ui-builder\/runtime\/bin\/<helper>\.mjs/i);
   assert.match(cliTransport, /do not probe bare PATH commands first/i);
+  assert.match(cliTransport, /blocked wrapper command state/i);
+  assert.match(cliTransport, /exact `?nb-flow-surfaces\.mjs <subcommand>`? wrapper command\/output/i);
+  assert.doesNotMatch(cliTransport, /blocked nb command state|chosen nb path|exact `?nb api \.\.\.`? command\/output/i);
 
   const executionChecklistLocalCli = read('references/execution-checklist.md');
-  assert.match(executionChecklistLocalCli, /node skills\/nocobase-ui-builder\/runtime\/bin\/nb-page-preview\.mjs/i);
+  assert.match(executionChecklistLocalCli, /nb-flow-surfaces\.mjs apply-blueprint/i);
 
   const cliCommandSurface = read('references/cli-command-surface.md');
-  assert.match(cliCommandSurface, /node skills\/nocobase-ui-builder\/runtime\/bin\/nb-page-preview\.mjs --prepare-write/i);
+  assert.match(cliCommandSurface, /nb-flow-surfaces\.mjs/i);
+  assert.match(cliCommandSurface, /internal `?prepare-write`?/i);
+  assert.match(cliCommandSurface, /unresolved `?nb-flow-surfaces\.mjs <subcommand>`? wrapper command/i);
+  assert.doesNotMatch(cliCommandSurface, /unresolved `?nb api \.\.\.`? command/i);
 
   const pageIntent = read('references/page-intent.md');
-  assert.match(pageIntent, /node skills\/nocobase-ui-builder\/runtime\/bin\/nb-page-preview\.mjs/i);
+  assert.match(pageIntent, /nb-flow-surfaces\.mjs apply-blueprint/i);
 
   const normativeContract = read('references/normative-contract.md');
   assert.match(normativeContract, /node skills\/nocobase-ui-builder\/runtime\/bin\/<helper>\.mjs/i);
 
+  for (const relativePath of ['SKILL.md', 'agents/openai.yaml', ...walkMarkdownFiles('references')]) {
+    const text = read(relativePath);
+    assert.doesNotMatch(text, /nb-page-preview/i, `${relativePath} should not expose nb-page-preview`);
+    assert.doesNotMatch(
+      text,
+      /\bnb\s+api\s+flow-surfaces\b/i,
+      `${relativePath} should not expose raw nb api flow-surfaces; use nb-flow-surfaces.mjs`,
+    );
+    assert.doesNotMatch(
+      text,
+      /prepareApplyBlueprintRequest/i,
+      `${relativePath} should not direct agents to call prepareApplyBlueprintRequest`,
+    );
+    assert.doesNotMatch(
+      text,
+      /localized existing-surface edits[\s\S]{0,160}(?:low-level\s+`?flow-surfaces`?|go through\s+`?flow-surfaces`?)/i,
+      `${relativePath} should not route localized edits through old low-level flow-surfaces wording`,
+    );
+  }
+
+  const runtimePackage = read('runtime/package.json');
+  assert.doesNotMatch(runtimePackage, /nb-page-preview/i, 'runtime package should not publish nb-page-preview');
+  assert.equal(
+    existsSync(path.join(skillRoot, 'runtime/bin/nb-page-preview.mjs')),
+    false,
+    'runtime bin should not keep nb-page-preview.mjs',
+  );
+
   const localEditQuickHelper = read('references/local-edit-quick.md');
   assert.match(localEditQuickHelper, /nb-localized-write-preflight/i);
   assert.match(localEditQuickHelper, /runLocalizedWritePreflight/i);
-  assert.match(localEditQuickHelper, /does not wrap or execute the nb transport|explicit `?nb api flow-surfaces/i);
+  assert.match(localEditQuickHelper, /does not wrap or execute the nb transport|wrapper\/backend write/i);
 
 });
 
@@ -1509,6 +1903,29 @@ test('whole-page applyBlueprint docs default to success-only completion while lo
   );
 });
 
+test('chart docs reject builder relation fields and point relation labels to SQL fallback', () => {
+  for (const relativePath of ['references/blocks/chart.md', 'references/chart-core.md', 'references/helper-contracts.md']) {
+    const text = read(relativePath);
+    assert.match(
+      text,
+      /CHART_BUILDER_RELATION_FIELD_RUNTIME_UNSUPPORTED|chart-builder-relation-field-runtime-unsupported/i,
+      `${relativePath} should name the stable local validation rule`,
+    );
+    assert.match(
+      text,
+      /relation[\s\S]{0,160}(SQL chart|sql chart|query\.mode = "sql")/i,
+      `${relativePath} should route relation-label grouping to SQL chart fallback`,
+    );
+  }
+
+  const chartBlock = read('references/blocks/chart.md');
+  assert.doesNotMatch(
+    chartBlock,
+    /\{\s*"field"\s*:\s*\[\s*"customer"\s*,\s*"name"\s*\]\s*,\s*"alias"\s*:\s*"customer_name"\s*\}/i,
+    'chart block docs must not keep the old builder relation dimension example',
+  );
+});
+
 test('whole-page authoring docs keep menu, layout, and filter gates aligned with runtime', () => {
   const skill = read('SKILL.md');
   assert.match(
@@ -1547,18 +1964,6 @@ test('whole-page authoring docs keep menu, layout, and filter gates aligned with
     pageIntent,
     /Omit `?layout` when it is not essential or not fully decided/i,
     'page-intent should no longer allow generic layout omission for multi-block scopes',
-  );
-
-  const asciiPreview = read('references/ascii-preview.md');
-  assert.match(
-    asciiPreview,
-    /at most one non-filter block[\s\S]{0,120}vertical order/i,
-    'ascii-preview should limit vertical-order fallback to valid single-block scopes',
-  );
-  assert.match(
-    asciiPreview,
-    /prepare-write validation failure|validation failure/i,
-    'ascii-preview should treat missing multi-block layout as a gate failure, not a valid default',
   );
 
   const normative = read('references/normative-contract.md');
@@ -1684,6 +2089,50 @@ test('defaults collection fieldGroups docs keep the large-popup threshold visibl
   );
 });
 
+test('defaults collection fieldGroups docs require fast self-review and one retry', () => {
+  for (const relativePath of [
+    'SKILL.md',
+    'references/whole-page-quick.md',
+    'references/page-blueprint.md',
+    'references/normative-contract.md',
+    'references/tool-shapes.md',
+  ]) {
+    const text = read(relativePath);
+    assert.match(
+      text,
+      /fieldGroups[\s\S]{0,260}self-review[\s\S]{0,260}(approve|regenerate)/i,
+      `${relativePath} should require a compact fieldGroups self-review verdict`,
+    );
+    assert.match(
+      text,
+      /fieldGroups[\s\S]{0,420}(regenerate|retry)[\s\S]{0,180}(once|single retry|at most once)|regenerate[\s\S]{0,180}(once|single retry|at most once)[\s\S]{0,420}fieldGroups/i,
+      `${relativePath} should cap defaults fieldGroups regeneration to one retry`,
+    );
+    assert.match(
+      text,
+      /fieldGroups[\s\S]{0,420}(lowest practical reasoning|no-think|chain-of-thought)|(?:lowest practical reasoning|no-think|chain-of-thought)[\s\S]{0,420}fieldGroups/i,
+      `${relativePath} should keep the low-effort/no-think guidance visible`,
+    );
+  }
+
+  const defaultPrompt = read('agents/openai.yaml');
+  assert.match(
+    defaultPrompt,
+    /defaults fieldGroups[\s\S]{0,120}self-review[\s\S]{0,120}approve[\/|]regenerate/i,
+    'default prompt should require a compact fieldGroups self-review verdict',
+  );
+  assert.match(
+    defaultPrompt,
+    /defaults fieldGroups[\s\S]{0,180}(lowest reasoning|no-think)[\s\S]{0,180}(no CoT|chain-of-thought)/i,
+    'default prompt should keep low-effort/no-think/no-CoT guidance visible',
+  );
+  assert.match(
+    defaultPrompt,
+    /defaults fieldGroups[\s\S]{0,220}regenerate once/i,
+    'default prompt should cap fieldGroups regeneration to one retry',
+  );
+});
+
 test('whole-page defaults docs require recomputing involved collections and keep fieldGroups target-scoped', () => {
   for (const relativePath of [
     'SKILL.md',
@@ -1789,43 +2238,46 @@ test('whole-page defaults docs keep the fixed popup trio and table addNew thresh
   );
 });
 
-test('helper contracts require caller-supplied collectionMetadata for data-bound prepare-write', () => {
+test('helper contracts document prepare-write collectionMetadata auto-resolution', () => {
   const helperContracts = read('references/helper-contracts.md');
-  assert.match(helperContracts, /does not fetch live collection metadata/i);
+  assert.match(helperContracts, /auto-resolves missing `?collectionMetadata`? entries/i);
+  assert.match(helperContracts, /data-modeling collections get/i);
+  assert.match(helperContracts, /resource list/i);
+  assert.match(helperContracts, /--no-auto-collection-metadata/i);
   assert.match(helperContracts, /collectionMetadata/i);
   assert.match(helperContracts, /data-bound block/i);
   assert.match(helperContracts, /missing-collection-metadata/i);
   assert.match(helperContracts, /validate[s]?(?: fixed)? defaults completeness/i);
-  assert.match(helperContracts, /caller-supplied/i);
+  assert.match(helperContracts, /caller-supplied[\s\S]{0,80}wins/i);
+  assert.match(helperContracts, /wrapper path auto-resolves missing `?collectionMetadata`? entries/i);
   assert.doesNotMatch(helperContracts, /defaultsRequirements\.skipped|skip(?:s|ped)? completeness|skip(?:s|ped)? defaults/i);
-  assert.match(helperContracts, /do not use it as a schema-aware planner/i);
 });
 
 test('localized preflight docs keep explicit helper-vs-transport boundary', () => {
   const skill = read('SKILL.md');
-  assert.match(skill, /explicit local validator|not as a transport wrapper/i);
-  assert.match(skill, /later explicit `?nb api flow-surfaces/i);
+  assert.match(skill, /explicit local validator/i);
+  assert.match(skill, /wrapper `node skills\/nocobase-ui-builder\/runtime\/bin\/nb-flow-surfaces\.mjs/i);
   assert.match(skill, /backend runtime remains compatibility-tolerant|compatibility-tolerant/i);
 
   const helperContracts = read('references/helper-contracts.md');
   assert.match(helperContracts, /local\/read-only/i);
   assert.match(helperContracts, /does not execute `?nb`?/i);
-  assert.match(helperContracts, /does not wrap the transport/i);
-  assert.match(helperContracts, /later explicit `?nb api flow-surfaces/i);
+  assert.match(helperContracts, /does not wrap the transport by itself|does not wrap the transport/i);
+  assert.match(helperContracts, /later explicit wrapper call|later wrapper write/i);
 
   const localEditQuick = read('references/local-edit-quick.md');
-  assert.match(localEditQuick, /later explicit `?nb api flow-surfaces/i);
+  assert.match(localEditQuick, /later wrapper\/backend write|through `node skills\/nocobase-ui-builder\/runtime\/bin\/nb-flow-surfaces\.mjs/i);
   assert.match(localEditQuick, /does not wrap or execute the nb transport/i);
 
   const openaiYaml = read('agents/openai.yaml');
   const defaultPrompt = readYamlDoubleQuotedScalar(openaiYaml, 'default_prompt');
   assert.match(defaultPrompt, /local preflight/i);
-  assert.match(defaultPrompt, /explicit nb write remains direct/i);
+  assert.match(defaultPrompt, /cliBody only/i);
 });
 
 test('prepare-write helper-envelope docs explain collectionMetadata requirements', () => {
   for (const relativePath of [
-    'references/ascii-preview.md',
+    'references/helper-contracts.md',
     'references/template-decision-summary.md',
   ]) {
     const text = read(relativePath);

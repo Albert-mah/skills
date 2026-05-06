@@ -10,8 +10,9 @@ The host is a value-return surface; use `return null` there instead.
 - `js-model.render`
 
 ## Required ctx roots
+- `ctx.libs`
 - `ctx.value`
-- `ctx.record`
+- `ctx.getVar`
 - `ctx.render`
 
 ## Contract
@@ -23,17 +24,19 @@ The host is a value-return surface; use `return null` there instead.
 ## Normalized snippet
 
 ```js
-const value = ctx.value ?? ctx.record?.description ?? '';
+const { Typography } = ctx.libs.antd;
+const currentRecord = await ctx.getVar('ctx.record');
+const value = ctx.value ?? currentRecord?.description ?? '';
 if (String(value).trim() === '') {
   ctx.render(null);
   return;
 }
 
-ctx.render(String(value));
+ctx.render(<Typography.Text>{String(value)}</Typography.Text>);
 ```
 
 ## Editable slots
 - Replace `description` with the fallback record field.
 
 ## Skill-mode notes
-Use `ctx.render(null)` for hidden render output; do not skip `ctx.render(...)` entirely.
+Use `ctx.render(null)` for hidden render output; visible output should use Ant Design JSX.

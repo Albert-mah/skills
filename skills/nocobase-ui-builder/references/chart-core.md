@@ -4,7 +4,7 @@ Read [chart.md](./chart.md) first for chart tasks. Read this file only after you
 
 If you need to verify complex contracts, negative cases, or regression matrices, continue with [chart-validation.md](./chart-validation.md). This file only keeps the runtime main path.
 
-Canonical front door is `nb api flow-surfaces`. When this file mentions `add-block`, `configure`, `context`, or `get`, it refers to nb API families and raw nb bodies; use [tool-shapes.md](./tool-shapes.md) or [settings.md](./settings.md) for body details.
+Agent-facing front door is `node skills/nocobase-ui-builder/runtime/bin/nb-flow-surfaces.mjs`. When this file mentions `add-block`, `configure`, `context`, or `get`, it refers to wrapper commands over flow-surfaces families and the same raw business objects; use [tool-shapes.md](./tool-shapes.md) or [settings.md](./settings.md) for body details.
 
 ## Contents
 
@@ -25,7 +25,7 @@ Canonical front door is `nb api flow-surfaces`. When this file mentions `add-blo
 
 ## Public Blueprint
 
-For chart, `nb api flow-surfaces configure --body { changes }` / `compose --body { blocks[].settings }` should default to these three semantic groups:
+For chart, wrapper `configure --body { changes }` / `compose --body { blocks[].settings }` should default to these three semantic groups:
 
 ```json
 {
@@ -41,13 +41,17 @@ Other than that, the chart block should only expose four additional outer-block 
 
 The priority is to stabilize both "card displays" and "chart renders". Do not expose frontend-internal details such as `props / decoratorProps / stepParams` to the user.
 
-Chart is also an example of the general public-settings pattern: when creating or reconfiguring, prefer public semantics such as `query / visual / events / title / displayTitle / height / heightMode`. Do not reverse internal `props / decoratorProps / stepParams` from readback into the next input template.
+Chart is also an example of the general public-settings pattern: when creating or reconfiguring, prefer public semantics such as `query / visual / events / title / height / heightMode`. Do not reverse internal `props / decoratorProps / stepParams` from readback into the next input template.
+
+For whole-page `applyBlueprint`, put chart configs under `assets.charts` and reference them from block `chart`. Do not put `stepParams` on the block. Public `visual` uses `mode / type / mappings`; do not write internal option-builder keys such as `xField`, `yField`, `pieCategory`, or `pieValue` as public input.
+
+Use canonical `query.resource.collectionName` in public chart input; do not use the deprecated alias `query.resource.collection`.
 
 ## Default Strategy
 
 1. Default to `query.mode = "builder"` first.
 2. Default to `visual.mode = "basic"` first.
-3. When reconfiguring an existing chart, default to the `safeDefaults` returned by `nb api flow-surfaces context --body { path: "chart" }`. When creating a new chart, create the block first, write `query` first, and only then read `path="chart"`.
+3. When reconfiguring an existing chart, default to the `safeDefaults` returned by wrapper `context --body { path: "chart" }`. When creating a new chart, create the block first, write `query` first, and only then read `path="chart"`.
 4. If you hit `riskyPatterns`, do not forbid the path outright. You may continue, but you must mark the result as risky and add `readback`.
 5. If you hit `unsupportedPatterns`, do not invent a payload. Rewrite it into a safe subset or tell the user clearly that the current contract does not support it.
 6. Only upgrade under the following conditions:
@@ -59,12 +63,12 @@ Chart is also an example of the general public-settings pattern: when creating o
 
 The most stable execution order for a chart block is not a one-shot blind write. It is:
 
-1. `add-block(type="chart", settings={ title?, displayTitle?, height?, heightMode? })`
+1. `add-block(type="chart", settings={ title?, height?, heightMode? })`
 2. If you are configuring a builder query, read `context(path="collection")` first to pick fields
-3. Run `configure(changes={ query, title?, displayTitle?, height?, heightMode? })` first
+3. Run `configure(changes={ query, title?, height?, heightMode? })` first
 4. Then read `context(path="chart")`
 5. Based on `chart.queryOutputs / aliases / supportedMappings / supportedStyles / safeDefaults / riskyPatterns / unsupportedPatterns`, run `configure(changes={ visual, events? })`
-6. Use `nb api flow-surfaces get --uid <chart-uid>` for canonical readback
+6. Use wrapper `get --uid <chart-uid>` for canonical readback
 7. If a risky pattern is hit, state clearly in the result that this is a risky path, and confirm persistence through readback
 
 When reconfiguring an existing chart, you may skip the initial block-creation step and continue directly from "read `path="chart"` / clear stale query state / reconfigure visual". If you want to clear old builder state, especially residue such as `sorting` / `filter`, do not rely on omission and hope the server clears it. Pass explicit empties instead, for example:
@@ -81,10 +85,9 @@ Only use `changes.configure` when you are explicitly preserving compatibility wi
 
 ## Outer Block Parameters (Minimum Exposed Set)
 
-In addition to `query / visual / events / configure`, the chart block should expose only these four outer parameters to this skill:
+In addition to `query / visual / events / configure`, the chart block should expose only these three outer parameters to this skill:
 
 - `title?: string`
-- `displayTitle?: boolean`
 - `height?: number`
 - `heightMode?: "defaultHeight" | "specifyValue" | "fullHeight"`
 
@@ -95,7 +98,7 @@ Notes:
   - `specifyValue`
   - `fullHeight`
 - For compatibility with old skills / historical payloads, the server still accepts `fixed` and automatically normalizes it to `specifyValue`
-- `title` only accepts a non-empty string; `displayTitle` only accepts `true | false`
+- `title` only accepts a non-empty string
 - `height` only accepts numbers; it must be paired with `heightMode = "specifyValue"` for the frontend to use the fixed value
 - The local prepare-write and localized preflight helpers auto-add `heightMode = "specifyValue"` when `height` is present and `heightMode` is omitted
 - If `heightMode = "specifyValue"`, it is recommended to also pass `height`
@@ -106,6 +109,7 @@ Notes:
 
 Invalid:
 
+- passing `displayTitle`; current flowSurfaces chart configureOptions do not support it
 - documenting `heightMode = "fixed"` as the primary public syntax
 - passing arbitrary unknown strings into `heightMode`
 
@@ -135,7 +139,7 @@ The safest minimum chart recipe is:
     ],
     "dimensions": [
       {
-        "field": "department.title"
+        "field": "status"
       }
     ]
   },
@@ -143,7 +147,7 @@ The safest minimum chart recipe is:
     "mode": "basic",
     "type": "bar",
     "mappings": {
-      "x": "department.title",
+      "x": "status",
       "y": "employeeCount"
     }
   }
@@ -154,6 +158,7 @@ When choosing default values, the skill should prefer this safe subset:
 
 - builder query
 - single measure
+- scalar dimensions only
 - basic visual
 - explicit mappings
 - no sorting generated in the first round
@@ -171,6 +176,8 @@ Valid:
 - `measures[].field` is required
 - `aggregation` only supports `sum | count | avg | max | min`
 - `dimensions` is optional
+- builder chart `measures[]`, `dimensions[]`, `sorting[]`, and `orders[]` should only use scalar fields on the host collection
+- relation field paths are blocked locally with `CHART_BUILDER_RELATION_FIELD_RUNTIME_UNSUPPORTED` / `chart-builder-relation-field-runtime-unsupported`; use SQL chart with an explicit join for relation-label grouping, or a scalar foreign-key field only when ID display is acceptable
 - `filter` is optional and should be a FilterGroup structure
 - `sorting` is optional; to maximize first-try success, the skill should not proactively generate sorting unless the user explicitly asks for it
 - If existing sorting needs to be cleared, pass `sorting: []` explicitly. Do not rely on omission
@@ -191,6 +198,7 @@ Invalid:
 - writing both `resource` and `collectionPath`
 - empty `measures`
 - empty-string `field`
+- relation field paths such as `["department", "title"]` or `"department.title"` in builder `measures[]`, `dimensions[]`, `sorting[]`, or `orders[]`
 - aggregate sorting that references an unselected field
 - aggregate sorting that still uses the original field name after introducing a custom alias, for example `sum(amount) as totalAmount` while still writing `sorting.field = "amount"`
 - empty-string `filter.items[].path`
@@ -202,6 +210,7 @@ Valid:
 
 - `mode = "sql"`
 - `sql` is required
+- do not mix SQL mode with builder query keys such as `resource`, `measures`, `dimensions`, `filter`, or `sorting`
 - `sqlDatasource` is optional
 - SQL is additionally persisted into `flowSql`; whether it was truly saved cannot be judged from stepParams alone
 - SQL should only be a single read-only `SELECT` / `WITH`
@@ -255,7 +264,9 @@ Invalid:
 
 1. `chart.queryOutputs` returned by `context(path="chart")`
 2. aliases explicitly declared in builder query
-3. if a dimension has no alias, its field-path output directly, for example `department.title`
+3. direct scalar dimension names only when the dimension is not a relation path
+
+For relation label grouping, do not use builder relation dimensions. Use `query.mode = "sql"` with an explicit join and map `visual.mappings.*` to the SQL output aliases returned by `context(path="chart")`. If the user accepts showing IDs, a scalar foreign-key field can stay in builder mode.
 
 `style` only exposes frequent parameters:
 
@@ -288,6 +299,7 @@ Valid:
 
 - `mode = "custom"`
 - `raw` is required, and the code must `return` an ECharts option object
+- do not mix custom visual mode with basic visual keys such as `type`, `mappings`, or `style`
 
 Invalid:
 
@@ -358,7 +370,7 @@ Key points:
 Two different context types must be distinguished here:
 
 1. **FlowSurfaces stable context**
-   - fields stably exposed to the skill by `nb api flow-surfaces context`
+   - fields stably exposed to the skill by wrapper `context`
    - for chart, the currently stable fields are:
      - `collection`
      - `chart.queryOutputs`
@@ -371,7 +383,7 @@ Two different context types must be distinguished here:
 2. **frontend runtime assumptions**
    - variables typically available at runtime to `ChartBlockModel` / `ChartOptionModel` / `ChartEventsModel`
    - they are appropriate for writing `visual.raw` / `events.raw`
-   - do not mistake them for fields that `nb api flow-surfaces context` is guaranteed to return
+   - do not mistake them for fields that wrapper `context` is guaranteed to return
 
 ### `visual.raw`
 
@@ -412,10 +424,9 @@ Rules:
 
 Minimum required post-write readback:
 
-- `tree.stepParams.cardSettings.titleDescription.title` when `displayTitle !== false` and `title` is non-empty
+- `tree.stepParams.cardSettings.titleDescription.title` when `title` is non-empty
 - `tree.stepParams.cardSettings.blockHeight.heightMode`
 - `tree.stepParams.cardSettings.blockHeight.height` when `heightMode = "specifyValue"`
-- if `displayTitle = false`, expect `tree.stepParams.cardSettings.titleDescription` to be absent
 - `cardSettings` is the primary criterion; if `tree.decoratorProps.*` exists it is only an auxiliary mirror, and `tree.props.*` is not the primary criterion
 - `tree.stepParams.chartSettings.configure.query`
 - `tree.stepParams.chartSettings.configure.chart.option`

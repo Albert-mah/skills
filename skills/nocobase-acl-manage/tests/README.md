@@ -14,23 +14,13 @@ This folder tracks runtime verification for `nocobase-acl-manage` v2.
 ```bash
 cd <BASE_DIR>
 nb --help
-nb env list -s project
+nb env list
 nb env update <ENV_NAME>  # use current env from the `*` row
 nb api acl --help
 nb api acl roles --help
 ```
 
-2. If env context is missing, recover through direct CLI:
-
-```bash
-nb env list -s project
-# add env when missing
-nb env add <ENV_NAME> --scope project --api-base-url <BASE_URL>/api --auth-type oauth
-# or switch to existing env
-nb env use <ENV_NAME> -s project
-```
-
-If needed, follow with add/use actions before continuing ACL tests.
+2. If env context is missing, stop ACL tests and use `nocobase-env-manage` before continuing.
 
 3. Execute the full serial suite from `./test-playbook.md` (TC01, TC02, TC04-TC20; TC03 removed).
 

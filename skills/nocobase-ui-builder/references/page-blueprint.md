@@ -2,7 +2,7 @@
 
 This file defines the simplified public page-structure JSON blueprint used by `applyBlueprint`.
 
-Canonical front door is `nb api flow-surfaces apply-blueprint`. This file owns the inner page document only; for nb raw body details, always read [tool-shapes.md](./tool-shapes.md). For reusable popup / block / fields planning, read [templates.md](./templates.md) instead of restating that matrix here.
+Agent-facing front door is `node skills/nocobase-ui-builder/runtime/bin/nb-flow-surfaces.mjs apply-blueprint`. This file owns the inner page document only; for wrapper raw body details, always read [tool-shapes.md](./tool-shapes.md). For reusable popup / block / fields planning, read [templates.md](./templates.md) instead of restating that matrix here.
 
 ## 1. Core Rules
 
@@ -11,6 +11,7 @@ Canonical front door is `nb api flow-surfaces apply-blueprint`. This file owns t
 - `version` stays `"1"`.
 - `mode` is either `"create"` or `"replace"`.
 - `create` creates a new menu item + page.
+- For duplicate-page prevention, page identity is `(navigation.group.routeId, page.title)`, after resolving a unique `navigation.group.title` to routeId. In `create`, same group + same page title may be prepared as `replace` with `target.pageSchemaUid`; different group + same page title does not merge, reuse, or auto-replace another page.
 - In `create`, any newly created `navigation.group` and any top-level or second-level `navigation.item` must include one valid semantic Ant Design icon.
 - `replace` rewrites one existing page and therefore requires `target.pageSchemaUid`.
 - In `replace`, omitted page-level fields are left unchanged.
@@ -18,7 +19,7 @@ Canonical front door is `nb api flow-surfaces apply-blueprint`. This file owns t
 - For a normal single-page request, default to exactly **one tab** unless the user explicitly asks for multiple route-backed tabs.
 - Do not add empty / placeholder tabs to a normal single-page draft.
 - Do not add placeholder `Summary` / `Later` / `备用` tabs or explanatory `markdown` / note / banner blocks unless the user explicitly asked for them.
-- Layout may be omitted only when one tab/popup contains at most one non-filter block. When multiple non-filter blocks share the same tab/popup, provide explicit layout instead of relying on server-generated top-to-bottom stacking, and give each data block a clear `title`. A single non-filter block may omit its block `title`.
+- Layout may be omitted only when one tab/popup contains at most one non-filter block. When multiple non-filter blocks share the same tab/popup, provide explicit layout instead of relying on server-generated top-to-bottom stacking, and give each non-template-backed data block a `title`; template-backed blocks are exempt. A single non-filter block may omit its block `title` unless the user explicitly asks for one.
 - `layout` is only allowed on `tabs[]` and inline `popup` documents; individual blocks do not accept `layout`.
 - `fieldsLayout` is available only on `createForm`, `editForm`, `details`, and `filterForm` blocks. It uses the same `{ rows: [[...]] }` shape as page/popup layout, but references field keys inside that block.
 - For `createForm`, `editForm`, and `details`, once the block contains more than 10 real fields, switch to explicit `fieldGroups` instead of one flat `fields[]` list.
@@ -45,7 +46,7 @@ Canonical front door is `nb api flow-surfaces apply-blueprint`. This file owns t
 
 - If `layout` is present, it must be an object, every referenced block must have a `key`, and every keyed block in that scope must be placed by the layout rows.
 - Field entries default to simple strings. Upgrade to a field object only when `popup`, `target`, `renderer`, or field-specific `type` is required.
-- In display blocks (`table`, `details`, `list`, `gridCard`), a first-level relation field such as `roles` must not stay as shorthand ``"roles"`` or `{ "field": "roles" }`. Write it as `{ "field": "roles", "popup": { ... } }` so the relation has an explicit detail popup. This rule does not apply to dotted paths such as `department.title`, and it does not apply to `createForm` / `editForm`.
+- In display blocks (`table`, `details`, `list`, `gridCard`), a first-level relation field such as `roles` must not stay as shorthand ``"roles"`` or `{ "field": "roles" }`. Write it as `{ "field": "roles", "popup": { ... } }` so the relation has an explicit detail popup. The popup content must also use the correct resource binding: `details` / `editForm` for the clicked relation record use `resource.binding = "currentRecord"`, while relation lists use `resource.binding = "associatedRecords"` plus `resource.associationField`. This rule does not apply to dotted paths such as `department.title`, and it does not apply to `createForm` / `editForm`.
 - Every field placed into any blueprint `fields[]` must come from live collection metadata truth and have a non-empty `interface`. Prefer `nb api data-modeling collections get --filter-by-tk <collection> --appends fields -j`; if that command family is unavailable, use `nb api resource list --resource collections --filter '{"name":"<collection>"}' --appends fields -j`. Do not place schema-only fields with `interface: null` / empty into block or form fields.
 - Public applyBlueprint blocks do **not** support generic `form`; use `editForm` or `createForm`.
 - Public applyBlueprint supports `calendar` only as the flow-model `CalendarBlockModel` path. Do not use legacy V1 / `CalendarV2` schema blocks in this contract.
@@ -53,6 +54,7 @@ Canonical front door is `nb api flow-surfaces apply-blueprint`. This file owns t
 - `kanban` main blocks may use `fields[]`, but do not support `fieldGroups`, `fieldsLayout`, or `recordActions`. Card content stays on the main card field list; quick-create and card-view content belongs in hidden popup hosts.
 - For deciding whether to use `template` / `popup.template` at all, follow [templates.md](./templates.md). For repeat-eligible popup / block / fields scenes, contextual `list-templates` is mandatory before binding one template or finalizing a reusable/template-backed path. Whole-page drafts may and should bind templates only after that flow yields one stable best candidate; keyword-only search is discovery-only and not binding proof. Fresh one-off pages with explicit local popup / block content, no existing template reference, and no reuse / save-template ask may stay inline and skip template routing.
 - For whole-page inline popup specs, when no explicit `popup.template` is present, default to `popup.tryTemplate=true` as the write fallback. Local popup content may remain as the miss fallback. Keep `list-templates` as the planning truth source, and let the backend own the final relation-vs-non-relation popup-template match.
+- Calendar / kanban hidden popup hosts follow the same create-time template fallback: when direct non-template `calendar` / `kanban` blocks omit those hidden popup objects, prepare-write adds `tryTemplate=true` popup settings so backend default popup/template completion can run instead of leaving the opener empty. Keep helper-specific defaults, metadata discovery, and strict binding validation in [helper-contracts.md](./helper-contracts.md).
 - When the user explicitly wants the newly created local popup to become a reusable popup template immediately, use `popup.saveAsTemplate={ name, description }` on that inline popup instead of planning a separate save step. It cannot be combined with `popup.template`, and it may coexist with `popup.tryTemplate=true`: a hit reuses the matched template directly, while a miss needs explicit local `popup.blocks` so the fallback popup can be saved.
 - In this skill's prepare-write flow, explicit local inline popups with `popup.blocks` may auto-receive generated `popup.saveAsTemplate={ name, description }`; keep `popup.tryTemplate=true` unless the blueprint explicitly sets `popup.tryTemplate=false`.
 - The blueprint stays public and declarative; it does not expose planning or execution internals.
@@ -64,6 +66,7 @@ Envelope boundary:
 - For the first real whole-page write, `prepare-write` is mandatory, and the actual nb raw body becomes `result.cliBody`, not the original draft blueprint.
 - Do not wrap that object again. If `prepare-write` already ran, that same object means the prepared `result.cliBody`.
 - Do not stringify this document into nested JSON such as `blueprint: "{\"version\":\"1\"...}"`.
+- Do not put `collectionMetadata` in this inner blueprint. It belongs only in the prepare helper envelope `{ blueprint, collectionMetadata }` or in direct helper call options; the CLI fills missing metadata entries by default before validation.
 - Every JSON snippet below should be treated as the inner blueprint draft; for the first real whole-page write, send the returned `cliBody` instead of the raw draft snippet.
 
 ## 2. Top-level Shape
@@ -143,6 +146,8 @@ Envelope boundary:
 - Every involved direct collection always uses top-level `defaults.collections.<collection>.popups.view/addNew/edit.{name,description}`, and any `table` block always pulls that collection into the `addNew` threshold evaluation even when the blueprint omitted an explicit `addNew` opener.
 - Use top-level `defaults.collections.<collection>.fieldGroups` as collection-level candidate groups for backend-generated `details`, `createForm`, and `editForm` popup content only when one of those fixed popup scenes should still have more than 10 effective fields after scene filtering.
 - Generate these groups from live collection metadata only for large generated popups. For 10 or fewer effective fields, omit `defaults.collections.<collection>.fieldGroups` and let the backend keep a flat popup.
+- After generating defaults fieldGroups, run one compact self-review with a short structured verdict (`approve` or `regenerate`) that checks semantic grouping, required-field coverage, group balance, and group title specificity. Use the lowest practical reasoning effort / no-think mode, do not ask for chain-of-thought, and if the verdict is `regenerate`, regenerate once from live metadata and stop after that single retry.
+- When using the prepare-write CLI with live metadata, missing `fieldGroups` for large generated popups is a hard validation error. The helper does not auto-generate generic groups; regenerate explicit semantic `fieldGroups` from the live fields, and make sure they cover every required generated-popup field.
 - Keep `fieldGroups` keyed only by target collection. If multiple relation paths land on the same target collection, reuse one collection entry; do not create per-association or per-popup `fieldGroups` branches.
 - The backend filters each group by scene: create/edit forms drop audit and non-writable fields; details can retain read-only/audit fields when displayable. Empty groups are omitted, but a provided small `fieldGroups` payload can still force divider-style generated forms, so do not emit it for small scenes.
 - Use `defaults.collections.<collection>.popups.view/addNew/edit.{name,description}` for the fixed collection record popup descriptor trio.
@@ -209,20 +214,21 @@ Example:
 ### `navigation.group` semantics
 
 - Prefer `navigation.group.routeId` when the destination menu group is already known.
-- `navigation.group.routeId` is exact targeting only; do not mix it with `icon`, `tooltip`, or `hideInMenu`.
-- `navigation.group.title` is for new-group creation or title-only unique same-title reuse.
+- `navigation.group.routeId` has highest priority; when it is present, `title`, `icon`, `tooltip`, and `hideInMenu` are ignored for the existing group.
+- `navigation.group.title` is for new-group creation or unique same-title reuse.
 - When `navigation.group.title` creates a new group, `navigation.group.icon` is required.
 - When `routeId` is omitted and `title` matches:
   - zero existing groups -> create a new group
   - one existing group -> reuse that group
   - multiple existing groups -> reject and require `routeId`
-- If same-title reuse hits an existing group, keep it title-only.
+- If same-title reuse hits an existing group, `icon`, `tooltip`, and `hideInMenu` are ignored.
 - If an existing group's metadata must change, do not rely on applyBlueprint create; use low-level `updateMenu` instead.
+- During real-write prepare, the local helper may rewrite one unique same-title existing group or one explicit `routeId` group to `navigation.group.routeId` in `cliBody`. Treat that prepared shape as authoritative.
 
 ### `navigation.item` semantics
 
 - In `create`, a new top-level or second-level `navigation.item` must include both `title` and `icon`.
-- When `navigation.item` is attached under one explicit existing `navigation.group.routeId`, keep `icon` by default; the local preview tolerates omission because it cannot prove whether that live target is already third-level or deeper.
+- When `navigation.item` is attached under one explicit existing `navigation.group.routeId`, keep `icon` by default; the local prepare-write gate tolerates omission because it cannot prove whether that live target is already third-level or deeper.
 - Replacing the page does not use `navigation.item` to mutate existing menu metadata.
 
 ## 3. Create Example
@@ -768,6 +774,26 @@ For record-capable blocks (`table`, `details`, `list`, `gridCard`):
 - for `edit`, backend default popup completion is fine for a standard single-form popup; if you author a custom edit popup with `popup.blocks`, that popup must contain exactly one `editForm`
 - in a custom `edit` popup, that `editForm` may omit `resource`; applyBlueprint will inherit the opener's current-record context
 
+Field assignment for update actions uses only `settings.assignValues`:
+
+- `bulkUpdate` is a collection action and belongs under block `actions`
+- `updateRecord` is a record action and belongs under `recordActions`
+- `assignValues` must be a plain object keyed by fields in the host collection metadata
+- `{}` is valid and clears the persisted field assignment
+- do not configure assignment fields through `add-fields`, raw `flowModels`, `AssignFormGridModel`, or `AssignFormItemModel`
+
+```json
+{
+  "type": "bulkUpdate",
+  "settings": {
+    "assignValues": {
+      "priority": "high",
+      "isTracking": true
+    }
+  }
+}
+```
+
 For collection-action hosts (`table`, `list`, `gridCard`, `calendar`, `kanban`):
 
 - when the user only asks to “增加筛选 / filter” on that data block, or explicitly adds “搜索 / search” to that host with wording such as “支持搜索 / 带搜索 / 可搜索 / searchable”, prefer the same block-level `filter` action
@@ -782,6 +808,8 @@ For `calendar` blocks:
 - allowed public actions are `today`, `turnPages`, `title`, `selectView`, plus applicable collection actions such as `filter`, `addNew`, `popup`, `refresh`, `js`, and `triggerWorkflow`
 - do not use `bulkDelete`, import/export, print, or record-level actions on the main calendar block
 - `settings.startField` and `settings.endField` must bind date-capable fields; `settings.titleField` and `settings.colorField` must bind non-association display fields
+- For generic prompts that only say “add a calendar block” and do not name a business date field, prefer date fields that are likely populated in existing data, such as `createdAt` / `updatedAt`, over optional business dates such as `birthday` / `hireDate`. This keeps event-click verification possible on existing records. Use optional business date fields only when the user asks for that calendar meaning or live data confirms those fields are populated.
+- quick-create and event click/view popups are configured through `settings.quickCreatePopup` and `settings.eventPopup` on the calendar block. Use the same popup/open-view shape as action popup settings, including `template`, `tryTemplate`, or `saveAsTemplate` when a popup template decision is required. In whole-page `create`, prepare-write auto-adds missing `quickCreatePopup` / `eventPopup` as `{ tryTemplate: true }`. Helper-only validation, metadata discovery, and strict field-binding behavior belong in [helper-contracts.md](./helper-contracts.md). Do not put `popup.template` on the calendar main block itself.
 - direct public calendar blocks use the same non-empty block-level `defaultFilter` contract as the other shared data-surface blocks; filter/search wording on a calendar host routes to that host's `filter` action unless a real `filterForm` is explicitly requested
 
 For `kanban` blocks:
@@ -789,6 +817,7 @@ For `kanban` blocks:
 - allowed public main-block actions are `filter`, `addNew`, `popup`, `refresh`, and `js`
 - do not use `today`, `turnPages`, `bulkDelete`, `triggerWorkflow`, import/export, print, or record-level actions on the main kanban block
 - public main kanban blocks may keep `fields[]`, but do not accept `fieldGroups`, `fieldsLayout`, or `recordActions`
+- quick-create and card click/view popups are configured through `settings.quickCreatePopup` and `settings.cardPopup`. In whole-page `create`, prepare-write auto-adds missing `quickCreatePopup` / `cardPopup` as `{ tryTemplate: true }` and defaults missing `settings.quickCreateEnabled` / `settings.enableCardClick` to `true`; explicit overrides are preserved. Helper-only popup materialization, defaults checks, metadata discovery, and explicit `groupField` validation belong in [helper-contracts.md](./helper-contracts.md).
 - direct public kanban blocks use the same non-empty block-level `defaultFilter` contract as the other shared data-surface blocks; filter/search wording on a kanban host routes to that host's `filter` action unless a real `filterForm` is explicitly requested
 
 Required block-level `defaultFilter` plus optional filter action settings shape:
@@ -867,6 +896,14 @@ or
 ```json
 [{ "key": "employeesTable", "span": 12 }]
 ```
+
+For two blocks side by side in one row, use two cells in the same row:
+
+```json
+{ "rows": [["usersCalendar", "usersKanban"]] }
+```
+
+Do not wrap a cell in another array such as `[["usersCalendar", "usersKanban"]]` as a single cell; each row array contains cells directly.
 
 Public `applyBlueprint` layout cells do **not** use `uid`, `ref`, or `$ref`.
 

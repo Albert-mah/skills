@@ -2,7 +2,7 @@
 
 Read this file first when you already know you are creating a block / field / action / record action, and the user also requires frequent public attributes such as title, label, required, or button style. The goal is to inline public semantic `settings` directly into `add*`, rather than creating an empty node first and then mechanically adding a separate `configure`. Whether `catalog` is mandatory is governed by [normative-contract.md](./normative-contract.md).
 
-Canonical front door is `nb api flow-surfaces`. This file is for **low-level write APIs** such as `add-*`, `configure`, `update-settings`, `set-layout`, and `set-event-flows`. JSON examples below use the nb raw body. For body details, see [tool-shapes.md](./tool-shapes.md). It is not the authoring guide for the public whole-page `applyBlueprint` JSON blueprint.
+Agent-facing front door is `node skills/nocobase-ui-builder/runtime/bin/nb-flow-surfaces.mjs`. This file is for **low-level write APIs** such as `add-*`, `configure`, `update-settings`, `set-layout`, and `set-event-flows`. JSON examples below use the raw business object that the wrapper eventually sends. For body details, see [tool-shapes.md](./tool-shapes.md). It is not the authoring guide for the public whole-page `applyBlueprint` JSON blueprint.
 
 ## Contents
 
@@ -32,7 +32,7 @@ Canonical front door is `nb api flow-surfaces`. This file is for **low-level wri
 | --- | --- | --- |
 | create node + frequent public attributes | `add* + settings` | the target fields have already been exposed as public semantics in the live environment; if confirmation is needed, read `catalog` first via normative contract |
 | small update to an existing node | `configure(changes)` | still within public semantic fields, but the node does not need to be recreated |
-| switch an existing relation field presentation | `configure(changes)` on `wrapperUid` | use flat `fieldType` with optional `fields` / `selectorFields` / `titleField`; use `popupSubTable` for 弹窗子表格 and `subTable` only for inline/editable subtable; do not send internal model keys |
+| switch an existing relation field presentation | `configure(changes)` on `wrapperUid` | use flat `fieldType` with optional `fields` / `titleField`; for `picker`, `fields` configures the selector table columns; use `popupSubTable` for 弹窗子表格 and `subTable` only for inline/editable subtable; do not send internal model keys |
 | path-level fine-grained patch | `update-settings` | the live environment only exposes a domain contract, without a public semantic entry |
 | layout | `set-layout` | only when the user explicitly accepts whole-layout replacement and the full current layout has already been read back |
 | event flows | `set-event-flows` | only when the user explicitly accepts full instance-level flow replacement and the full current flow has already been read back |
@@ -49,7 +49,7 @@ Use `set-layout` when the target grid already exists and the user explicitly acc
 
 Core rules:
 
-- Preferred CLI family is `nb api flow-surfaces set-layout`.
+- Preferred agent entry is `node skills/nocobase-ui-builder/runtime/bin/nb-flow-surfaces.mjs set-layout`.
 - Low-level `set-layout` is **not** the public page/popup/fields layout contract. Do not reuse `{ rows: [[{ key, span }]] }` here.
 - `target.uid` must be the live grid uid from readback, not a page/popup block `key`.
 - `rows` is `Record<string, string[][]>`: each row value is an array of column cells, and each cell is an array of stacked live child `uid`s.
@@ -100,7 +100,7 @@ Use `set-event-flows` when the target already exists and the user explicitly acc
 
 Core rules:
 
-- Preferred CLI family is `nb api flow-surfaces set-event-flows`.
+- Preferred agent entry is `node skills/nocobase-ui-builder/runtime/bin/nb-flow-surfaces.mjs set-event-flows`.
 - Preferred body key is `flowRegistry`; `flows` is only a tolerated alias.
 - Always read the full current target first, then preserve the existing `flowRegistry` object shape unless the user explicitly wants a full redesign.
 - For `Execute JavaScript` steps, validate the code first through [js.md](./js.md), [js-surfaces/event-flow.md](./js-surfaces/event-flow.md), and [runjs-runtime.md](./runjs-runtime.md), then write the validated code back into the existing step's `params.code`.
@@ -194,6 +194,7 @@ Notes:
 - For relation field presentation switching, prefer targeting the field wrapper rather than the inner field.
 - `popupSubTable` means 弹窗子表格 / popup editing. `subTable` means 编辑子表格 / inline editing.
 - After writing, always read back both the wrapper and the inner field to confirm that the server rebuilt the field sub-model instead of leaving stale UI structure behind.
+- For `picker` and `popupSubTable`, `fields` also configures the select-popup table under inner field `subModels["grid-block"]`. Persisted readback should show exactly one selector table item using `TableSelectModel`; if it shows ordinary `TableBlockModel`, treat that as a live repair gap because row selection will not receive the popup's `rowSelectionProps`.
 
 Invalid:
 
@@ -255,9 +256,9 @@ Create `createForm` and give it a title directly:
 
 When `add-block` creates a direct non-template public `table` / `list` / `gridCard` / `calendar` / `kanban`, keep a non-empty `defaultFilter` at the top level of that block-create envelope. Prefer 3 to 4 common business fields when metadata supports them; if fewer than 3 suitable candidates exist, cover every available candidate instead. Do not move it into `settings.defaultFilter`; template-backed imports do not accept block-level `defaultFilter` or `defaultActionSettings`.
 
-When `add-block` creates a public `calendar`, keep collection binding in `resourceInit`, keep main-block field bindings in block `settings`, and do not try to inline popup content fields onto the main block.
+When `add-block` creates a public `calendar`, keep collection binding in `resourceInit`, keep main-block field bindings in block `settings`, and do not try to inline popup content fields onto the main block. Hidden quick-create / event popups live under `settings.quickCreatePopup` and `settings.eventPopup`.
 
-When `add-block` creates a public `kanban`, keep collection binding in `resourceInit`, keep card content on top-level `fields[]`, and keep grouped form/details content in quick-create or card-view popup hosts instead of main-block `fieldGroups` / `recordActions`.
+When `add-block` creates a public `kanban`, keep collection binding in `resourceInit`, keep card content on top-level `fields[]`, and keep grouped form/details content in `settings.quickCreatePopup` / `settings.cardPopup` instead of main-block `fieldGroups` / `recordActions`.
 
 ```json
 {
@@ -283,10 +284,13 @@ When `add-block` creates a public `kanban`, keep collection binding in `resource
 
 Common settings that are suitable for direct inline use:
 
-- generic block: `title`, `displayTitle`, `height`, `heightMode`
+- generic card-like block: `title`, `displayTitle`, `height`, `heightMode`
 - `table`: `quickEdit`, `treeTable`, `defaultExpandAllRows`, `dragSort`, `dragSortBy`
 - `calendar`: `titleField`, `colorField`, `startField`, `endField`, `defaultView`, `quickCreateEvent`, `showLunar`, `weekStart`, `dataScope`, `linkageRules`, `quickCreatePopup`, `eventPopup`
+- `kanban`: `groupField`, `quickCreateEnabled`, `quickCreatePopup`, `enableCardClick`, `cardPopup`, `dataScope`, `linkageRules`
 - form-like blocks: `labelWidth`, `labelWrap`, `layout`, `labelAlign`, `colon`
+
+Do not copy `displayTitle` into block families whose runtime configureOptions do not expose it. Known unsupported cases include `chart` and `tree`; chart blocks accept `title`, `height`, `heightMode`, `query`, `visual`, and `events` instead.
 
 Height settings:
 
@@ -299,6 +303,13 @@ Calendar reminders:
 - `settings.startField` and `settings.endField` must bind date-capable non-association fields.
 - `settings.titleField` and `settings.colorField` must bind existing non-association display fields.
 - Public main calendar blocks do not accept `fields`, `fieldGroups`, or `recordActions`; event forms/details belong in the quick-create and event-view popup hosts.
+- Whole-page `create` prepare-write auto-adds missing direct non-template calendar hidden popup settings as `{ tryTemplate: true }`. Keep helper-only popup materialization, metadata discovery, defaults completeness, and strict binding validation in [helper-contracts.md](./helper-contracts.md).
+
+Kanban reminders:
+
+- Public main kanban blocks may use `fields[]`, but do not accept `fieldGroups`, `fieldsLayout`, or `recordActions`.
+- Quick-create content belongs in `settings.quickCreatePopup`; card click/view content belongs in `settings.cardPopup`.
+- Whole-page `create` prepare-write auto-adds missing direct non-template kanban hidden popup settings as `{ tryTemplate: true }`, defaults missing `quickCreateEnabled` / `enableCardClick` to `true`, and preserves explicit overrides. Keep helper-only metadata/defaults behavior and explicit `groupField` validation in [helper-contracts.md](./helper-contracts.md).
 
 ### `add-field`
 
@@ -440,6 +451,52 @@ If the goal is a standard details popup on a shown title/name field, prefer fiel
   }
 }
 ```
+
+### Update action field assignment
+
+Use public `settings.assignValues` only. Do not create/update `AssignFormGridModel` / `AssignFormItemModel`, do not write raw `flowModels`, and do not try to configure this with `add-fields`.
+
+`bulkUpdate` is a collection action, so it belongs under block `actions` or `add-action`:
+
+```json
+{
+  "target": { "uid": "users-table-uid" },
+  "type": "bulkUpdate",
+  "settings": {
+    "assignValues": {
+      "priority": "high",
+      "isTracking": true
+    }
+  }
+}
+```
+
+`updateRecord` is a record action, so it belongs under `recordActions` or `add-record-action`:
+
+```json
+{
+  "target": { "uid": "users-table-uid" },
+  "type": "updateRecord",
+  "settings": {
+    "assignValues": {
+      "status": "active"
+    }
+  }
+}
+```
+
+For existing update actions, `configure` uses the same key:
+
+```json
+{
+  "target": { "uid": "update-action-uid" },
+  "changes": {
+    "assignValues": {}
+  }
+}
+```
+
+`assignValues` must be a plain object keyed by fields in the host collection metadata. `{}` is valid and clears the persisted assignment.
 
 Readback rule for localized creates:
 

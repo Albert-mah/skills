@@ -5,12 +5,14 @@ A JS block should render one compact summary line from the current record.
 
 ## Do not use when
 The block needs to fetch and summarize a collection; use `scene/block/list-summary`.
+The block is standalone popup content reading the record that opened the popup; use `scene/block/popup-record-summary`.
 
 ## Surfaces
 - `js-model.render`
 
 ## Required ctx roots
-- `ctx.record`
+- `ctx.libs`
+- `ctx.getVar`
 - `ctx.render`
 - `ctx.t`
 
@@ -23,13 +25,23 @@ The block needs to fetch and summarize a collection; use `scene/block/list-summa
 ## Normalized snippet
 
 ```js
-const title = String(ctx.record?.title ?? ctx.record?.name ?? ctx.t('Untitled'));
-const owner = String(ctx.record?.owner?.nickname ?? ctx.record?.owner?.name ?? ctx.t('Unassigned'));
-ctx.render(`${title} · ${owner}`);
+const { Card, Space, Typography } = ctx.libs.antd;
+const currentRecord = await ctx.getVar('ctx.record');
+const title = String(currentRecord?.title ?? currentRecord?.name ?? ctx.t('Untitled'));
+const owner = String(currentRecord?.owner?.nickname ?? currentRecord?.owner?.name ?? ctx.t('Unassigned'));
+
+ctx.render(
+  <Card size="small">
+    <Space direction="vertical" size={2}>
+      <Typography.Text strong>{title}</Typography.Text>
+      <Typography.Text type="secondary">{owner}</Typography.Text>
+    </Space>
+  </Card>,
+);
 ```
 
 ## Editable slots
 - Replace the displayed record fields and fallback text.
 
 ## Skill-mode notes
-Keep this block-scoped and render-only. Do not mutate form fields or rely on popup/navigation APIs here.
+Keep this block-scoped, render-only, and Ant Design based. Use it only when the host has a real `ctx.record`; popup-level blocks should choose the popup record snippet instead.

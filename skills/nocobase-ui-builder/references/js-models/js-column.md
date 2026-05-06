@@ -38,17 +38,14 @@ description: 面向 builder 的 JSColumnModel 约束、上下文与默认代码�
 
 ## 默认写法
 
-```js
-const status = ctx.record?.status || '-';
-ctx.render(`<span>${status}</span>`);
-```
-
-或：
-
 ```jsx
-const { Tag } = ctx.libs.antd;
-const status = ctx.record?.status || 'unknown';
-ctx.render(<Tag color="green">{String(status)}</Tag>);
+const { Tag, Typography } = ctx.libs.antd;
+const status = (await ctx.getVar('ctx.record.status')) || 'unknown';
+ctx.render(
+  <Tag color="green">
+    <Typography.Text>{String(status)}</Typography.Text>
+  </Tag>,
+);
 ```
 
 ## 绝对不要默认生成的写法
@@ -60,7 +57,7 @@ return value;
 
 原因：
 
-- `record` 不是默认推荐的上下文入口，优先用 `ctx.record`
+- `record` 不是默认推荐的上下文入口，优先用 `await ctx.getVar('ctx.record...')`
 - `return value` 不是渲染动作
 
 也不要默认生成：
@@ -95,7 +92,7 @@ ctx.element.innerHTML = '<span>...</span>';
     "jsSettings": {
       "runJs": {
         "version": "v2",
-        "code": "const status = ctx.record?.status || '-'; ctx.render(`<span>${status}</span>`);"
+        "code": "const { Tag, Typography } = ctx.libs.antd;\\nconst status = (await ctx.getVar('ctx.record.status')) || 'unknown';\\nctx.render(\\n  <Tag color=\\\"green\\\">\\n    <Typography.Text>{String(status)}</Typography.Text>\\n  </Tag>,\\n);"
       }
     }
   }
