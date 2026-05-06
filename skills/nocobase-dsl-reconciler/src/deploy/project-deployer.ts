@@ -1002,11 +1002,12 @@ async function deployPageBlueprint(
   // If page already exists in state, use replace mode
   const isReplace = !!pageState?.page_uid;
 
-  const blueprint = pageToBlueprint(pageInfo, {
+  const blueprint = await pageToBlueprint(pageInfo, {
     groupId: isReplace ? undefined : groupId,
     groupTitle: isReplace ? undefined : groupTitle,
     mode: isReplace ? 'replace' : 'create',
     pageSchemaUid: isReplace ? pageState.page_uid : undefined,
+    log,
   });
 
   try {
@@ -1025,9 +1026,9 @@ async function deployPageBlueprint(
           // Found a live page — use replace mode with the live UID
           log(`  . found existing page in live routes, using replace mode`);
           state.pages[pageKey] = { route_id: liveExisting.id, page_uid: liveExisting.schemaUid, tab_uid: liveExisting.tabUid, blocks: {} };
-          bpPayload = pageToBlueprint(pageInfo, { mode: 'replace', pageSchemaUid: liveExisting.schemaUid }) as unknown as Record<string, unknown>;
+          bpPayload = await pageToBlueprint(pageInfo, { mode: 'replace', pageSchemaUid: liveExisting.schemaUid, log }) as unknown as Record<string, unknown>;
         } else {
-          bpPayload = pageToBlueprint(pageInfo, { groupId, groupTitle, mode: 'create' }) as unknown as Record<string, unknown>;
+          bpPayload = await pageToBlueprint(pageInfo, { groupId, groupTitle, mode: 'create', log }) as unknown as Record<string, unknown>;
         }
         result = await nb.surfaces.applyBlueprint(bpPayload) as Record<string, unknown>;
       } else {

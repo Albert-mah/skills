@@ -139,18 +139,68 @@ function detectLocalFetch(ast: AstNode): boolean {
   return found;
 }
 
+// Mirrors FORBIDDEN_BARE_GLOBALS from
+// nocobase-ui-builder/scripts/runjs_guard.mjs — bare-name globals that NB's
+// runJs sandbox blocks. Detected as Identifier callees / NewExpression callees
+// at any AST depth, with shadowing accounted for (local `const fetch = …`
+// disables the fetch check for that file).
+const FORBIDDEN_BARE_GLOBALS: Record<string, string> = {
+  fetch: 'fetch() not available — use ctx.request',
+  localStorage: 'localStorage not available — store on collections instead',
+  sessionStorage: 'sessionStorage not available',
+  XMLHttpRequest: 'XMLHttpRequest not available — use ctx.request',
+  WebSocket: 'WebSocket not available',
+  Worker: 'Worker not available',
+  SharedWorker: 'SharedWorker not available',
+  ServiceWorker: 'ServiceWorker not available',
+  BroadcastChannel: 'BroadcastChannel not available',
+  EventSource: 'EventSource not available',
+  indexedDB: 'indexedDB not available',
+  caches: 'caches not available',
+  Function: 'Function() constructor not available — equivalent to eval',
+  eval: 'eval() not available in NB JS sandbox',
+  globalThis: 'globalThis not available — use ctx',
+  process: 'process not available (server-only API)',
+  require: 'require not available — runJs is ESM-like, use ctx APIs',
+  module: 'module not available — runJs is not CommonJS',
+  exports: 'exports not available — runJs is not CommonJS',
+};
+
+function detectLocalBindings(ast: AstNode): Set<string> {
+  // Top-level `const X = …` / `function X(…)` / `let X` shadows globals of the
+  // same name. We only check declarators at any depth here — runJs doesn't
+  // have block scoping concerns for the names we care about (mostly fetch).
+  const found = new Set<string>();
+  walk(ast, n => {
+    if (n.type === 'FunctionDeclaration' || n.type === 'VariableDeclarator') {
+      const id = n.id as { name?: string } | undefined;
+      if (id?.name && FORBIDDEN_BARE_GLOBALS[id.name]) found.add(id.name);
+    }
+  });
+  return found;
+}
+
 function checkForbiddenApis(ast: AstNode, issues: RunJSIssue[]): void {
-  const hasLocalFetch = detectLocalFetch(ast);
+  const shadowed = detectLocalBindings(ast);
 
   walk(ast, n => {
-    // new URLSearchParams(...)
+    // `new X(...)` — flag NewExpressions of any forbidden global, plus the
+    // special-case URLSearchParams (not a bare-global runtime API but still
+    // unavailable in NB sandbox; suggest regex parse instead).
     if (n.type === 'NewExpression') {
       const callee = n.callee as { name?: string } | undefined;
-      if (callee?.name === 'URLSearchParams') {
+      const name = callee?.name;
+      if (name === 'URLSearchParams') {
         issues.push({
           level: 'error',
           type: 'forbidden_api',
           message: 'URLSearchParams not available — use regex/split to parse URL params',
+        });
+      } else if (name && FORBIDDEN_BARE_GLOBALS[name] && !shadowed.has(name)) {
+        issues.push({
+          level: 'error',
+          type: 'forbidden_api',
+          message: FORBIDDEN_BARE_GLOBALS[name],
         });
       }
     }
@@ -181,20 +231,29 @@ function checkForbiddenApis(ast: AstNode, issues: RunJSIssue[]): void {
       }
       if (callee?.type === 'Identifier') {
         const name = (callee as { name?: string }).name;
-        if (name === 'fetch' && !hasLocalFetch) {
+        if (name && FORBIDDEN_BARE_GLOBALS[name] && !shadowed.has(name)) {
           issues.push({
             level: 'error',
             type: 'forbidden_api',
-            message: 'fetch() not available — use ctx.request',
+            message: FORBIDDEN_BARE_GLOBALS[name],
           });
         }
-        if (name === 'eval') {
-          issues.push({
-            level: 'error',
-            type: 'forbidden_api',
-            message: 'eval() not available in NB JS sandbox',
-          });
-        }
+      }
+    }
+    // Member access on forbidden globals: localStorage.getItem, process.env.FOO,
+    // module.exports = …, etc. Read-only ref patterns are still useful to flag
+    // because they imply the user expects these to exist at runtime.
+    if (n.type === 'MemberExpression') {
+      const obj = n.object as { type?: string; name?: string } | undefined;
+      if (obj?.type === 'Identifier' && obj.name && FORBIDDEN_BARE_GLOBALS[obj.name] && !shadowed.has(obj.name)) {
+        // Skip cases like `function localStorage() { … }` where the AST visits
+        // the object Identifier — those are FunctionDeclaration ids handled
+        // above. The MemberExpression walker only sees real reads/writes.
+        issues.push({
+          level: 'error',
+          type: 'forbidden_api',
+          message: FORBIDDEN_BARE_GLOBALS[obj.name],
+        });
       }
     }
     // ES module import/export — script-mode parse usually rejects them, but

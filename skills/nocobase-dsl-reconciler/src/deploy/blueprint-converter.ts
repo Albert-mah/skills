@@ -18,6 +18,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { BlockSpec, FieldSpec, PopupSpec, LayoutRow } from '../types/spec';
 import type { PageInfo } from './page-discovery';
+import { validateRunJS } from '../utils/runjs-validator';
 import { loadYaml } from '../utils/yaml';
 import { slugify } from '../utils/slugify';
 import { BLOCK_TYPE_TO_MODEL } from '../utils/block-types';
@@ -82,15 +83,16 @@ export interface BlueprintBlock {
  * @param mode       'create' for new pages, 'replace' for updating existing
  * @param pageSchemaUid  For replace mode: the existing page's schema UID
  */
-export function pageToBlueprint(
+export async function pageToBlueprint(
   page: PageInfo,
   opts: {
     groupId?: number;
     groupTitle?: string;
     mode?: 'create' | 'replace';
     pageSchemaUid?: string;
+    log?: (msg: string) => void;
   } = {},
-): BlueprintDocument {
+): Promise<BlueprintDocument> {
   const mode = opts.mode || 'create';
   const blocks = page.layout.blocks || [];
 
@@ -112,12 +114,12 @@ export function pageToBlueprint(
     : [page.dir];
 
   // Build assets from all tabs
-  let assets: ReturnType<typeof buildAssets> = { scripts: {}, charts: {} };
+  let assets: Awaited<ReturnType<typeof buildAssets>> = { scripts: {}, charts: {} };
   for (let ti = 0; ti < (isMultiTab ? tabs.length : 1); ti++) {
     const tabBlks = isMultiTab ? (tabs[ti].blocks || []) : blocks;
     const dir = tabDirs[ti] || page.dir;
     const tabKey = isMultiTab ? `tab${ti}` : 'main';
-    const tabAssets = buildAssets(dir, tabBlks, tabKey);
+    const tabAssets = await buildAssets(dir, tabBlks, tabKey, opts.log);
     Object.assign(assets.scripts!, tabAssets.scripts || {});
     Object.assign(assets.charts!, tabAssets.charts || {});
   }
@@ -339,13 +341,20 @@ function convertField(f: FieldSpec): string | Record<string, unknown> | null {
 }
 
 /**
- * Build assets map from JS and chart files.
+ * Build assets map from JS and chart files. Returns inline `{ code, version }`
+ * assets for jsBlock entries and `{ configure: { query, chart } }` for charts.
+ *
+ * Each JS source is run through runjs-validator before inlining. Files with
+ * error-level issues (real syntax bugs, forbidden APIs, ctx.render(null)
+ * placeholders, unfilled DSL templates) are dropped from the asset map and
+ * logged so the caller's blueprint payload doesn't carry broken JS.
  */
-function buildAssets(
+async function buildAssets(
   pageDir: string,
   blocks: BlockSpec[],
   tabKey = 'main',
-): { scripts?: Record<string, Record<string, unknown>>; charts?: Record<string, Record<string, unknown>> } {
+  log: (msg: string) => void = () => {},
+): Promise<{ scripts?: Record<string, Record<string, unknown>>; charts?: Record<string, Record<string, unknown>> }> {
   const scripts: Record<string, Record<string, unknown>> = {};
   const charts: Record<string, Record<string, unknown>> = {};
 
@@ -356,7 +365,15 @@ function buildAssets(
     if (bs.type === 'jsBlock' && bs.file) {
       const jsPath = path.resolve(pageDir, bs.file);
       if (fs.existsSync(jsPath)) {
-        scripts[key] = { code: fs.readFileSync(jsPath, 'utf8') };
+        const code = fs.readFileSync(jsPath, 'utf8');
+        const v = await validateRunJS(code);
+        if (!v.ok) {
+          for (const issue of v.issues) {
+            if (issue.level === 'error') log(`      ✗ jsBlock ${bs.file}: ${issue.message}`);
+          }
+          continue;
+        }
+        scripts[key] = { code };
       }
     }
 
@@ -374,11 +391,22 @@ function buildAssets(
             if (fs.existsSync(sf)) sql = fs.readFileSync(sf, 'utf8');
           }
 
-          // Read render JS
+          // Read render JS — chart render is `(ctx) => echartsConfig` shape, NOT
+          // `ctx.render(...)`, so syntax/forbidden checks apply but render-required
+          // does not (validator default doesn't enforce render-required anyway).
           let renderJs = spec.render || '';
           if (spec.render_file) {
             const rf = path.resolve(pageDir, spec.render_file);
             if (fs.existsSync(rf)) renderJs = fs.readFileSync(rf, 'utf8');
+          }
+          if (renderJs) {
+            const v = await validateRunJS(renderJs);
+            if (!v.ok) {
+              for (const issue of v.issues) {
+                if (issue.level === 'error') log(`      ✗ chart render ${spec.render_file || ''}: ${issue.message}`);
+              }
+              continue;
+            }
           }
 
           // Blueprint chart asset — merged into block configure settings
