@@ -8,6 +8,28 @@ import type { BlockState } from '../../types/state';
 import type { DeployContext } from './types';
 import { ensureJsHeader, replaceJsUids } from '../../utils/js-utils';
 import { generateUid } from '../../utils/uid';
+import { validateRunJS } from '../../utils/runjs-validator';
+
+/**
+ * Run AST validation against runjs source. Returns true when the file is OK
+ * to push to NB. On error-level issues, logs them and returns false so the
+ * caller can `continue` and skip this entry. Warning-level issues (e.g. JSX
+ * edge cases ui-builder's parser misjudges) are silent — NB's runtime is the
+ * authority on what JSX shapes work.
+ */
+async function preflightJs(
+  code: string,
+  filePath: string,
+  log: (msg: string) => void,
+): Promise<boolean> {
+  const r = await validateRunJS(code);
+  for (const issue of r.issues) {
+    if (issue.level === 'error') {
+      log(`      ✗ ${filePath}: ${issue.message}`);
+    }
+  }
+  return r.ok;
+}
 
 /**
  * Deploy JS items into a form/details grid.
@@ -33,51 +55,7 @@ export async function deployJsItems(
     if (!fs.existsSync(jsPath)) continue;
 
     let code = fs.readFileSync(jsPath, 'utf8');
-    // Strip string literals before checking for unfilled DSL template params.
-    // i18n calls like t('{{count}}m ago', { count }) use the SAME {{var}} syntax
-    // and are valid runtime templates — only flag {{var}} patterns appearing as
-    // bare JS expressions (e.g. const x = {{maxRows}}; — leftover from scaffold).
-    const codeNoStrings = code
-      .replace(/`(?:\\.|[^`\\])*`/g, '""')
-      .replace(/'(?:\\.|[^'\\])*'/g, '""')
-      .replace(/"(?:\\.|[^"\\])*"/g, '""');
-    const unfilled = codeNoStrings.match(/\{\{(\w+)(?:\|\|[^}]*)?\}\}/g);
-    if (unfilled?.length) {
-      log(`      ✗ JS item ${jsSpec.file}: unfilled template params: ${unfilled.join(', ')}`);
-      continue;
-    }
-    if (/ctx\.render\s*\(\s*null\s*\)/.test(code)) {
-      log(`      ✗ JS item ${jsSpec.file}: ctx.render(null) is a placeholder — implement actual content`);
-      continue;
-    }
-    // Forbidden APIs in NocoBase JS sandbox
-    // window/document ARE available (safe proxy), but only specific methods:
-    //   window: setTimeout, setInterval, console, Math, Date, FormData, Blob, URL, open, location
-    //   document: createElement, querySelector, querySelectorAll
-    // NOT available: URLSearchParams, fetch, XMLHttpRequest, eval
-    // Skip fetch() check when the file declares its own local `fetch` (common
-    // pattern in NocoBase JS blocks: `const fetch = async () => {...}` —
-    // shadows the global, calls inside refer to the local).
-    const hasLocalFetch = /\b(?:const|let|var|function)\s+fetch\b/.test(codeNoStrings);
-    const forbidden = [
-      { pattern: /\bnew\s+URLSearchParams\b/, name: 'URLSearchParams (use regex to parse URL params instead)' },
-      { pattern: /\bimport\s+/, name: 'ES module import' },
-      { pattern: /\bexport\s+(default\s+)?/, name: 'ES module export' },
-      ...(hasLocalFetch ? [] : [{ pattern: /\bfetch\s*\(/, name: 'fetch() (use ctx.request instead)' }]),
-    ];
-    let hasForbidden = false;
-    for (const { pattern, name } of forbidden) {
-      if (pattern.test(code)) {
-        log(`      ✗ JS item ${jsSpec.file}: uses ${name} — not available in NocoBase JS sandbox`);
-        hasForbidden = true;
-        break;
-      }
-    }
-    if (hasForbidden) continue;
-    if (/ctx\.sql\s*\(/.test(code) && !/ctx\.sql\.(save|runById)/.test(code)) {
-      log(`      ✗ JS item ${jsSpec.file}: ctx.sql() direct call not available — use ctx.sql.save() + ctx.sql.runById()`);
-      continue;
-    }
+    if (!(await preflightJs(code, `JS item ${jsSpec.file}`, log))) continue;
     code = ensureJsHeader(code, { desc: jsSpec.desc, jsType: 'JSItemModel', coll });
     code = replaceJsUids(code, allBlocksState);
 
@@ -156,6 +134,7 @@ export async function deployJsColumns(
     if (!fs.existsSync(jsPath)) continue;
 
     let code = fs.readFileSync(jsPath, 'utf8');
+    if (!(await preflightJs(code, `JS col ${jsSpec.file}`, log))) continue;
     code = ensureJsHeader(code, { desc: jsSpec.desc, jsType: 'JSColumnModel', coll });
 
     const existing = blockState.js_columns?.[jsSpec.key];

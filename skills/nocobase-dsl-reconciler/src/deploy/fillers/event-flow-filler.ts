@@ -5,6 +5,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { BlockSpec } from '../../types/spec';
 import type { DeployContext } from './types';
+import { validateRunJS } from '../../utils/runjs-validator';
 
 export async function deployEventFlows(
   ctx: DeployContext,
@@ -22,6 +23,13 @@ export async function deployEventFlows(
     const efPath = path.join(modDir, ef.file);
     if (!fs.existsSync(efPath)) continue;
     const code = fs.readFileSync(efPath, 'utf8');
+    const v = await validateRunJS(code);
+    if (!v.ok) {
+      for (const issue of v.issues) {
+        if (issue.level === 'error') log(`      ✗ event flow ${ef.file}: ${issue.message}`);
+      }
+      continue;
+    }
     const flowKey = ef.flow_key || `custom_${Object.keys(flowRegistry).length}`;
     const stepKey = ef.step_key || 'runJs';
     flowRegistry[flowKey] = {

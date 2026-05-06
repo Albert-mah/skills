@@ -6,6 +6,7 @@ import * as path from 'node:path';
 import type { BlockSpec } from '../../types/spec';
 import type { DeployContext } from './types';
 import { loadYaml } from '../../utils/yaml';
+import { validateRunJS } from '../../utils/runjs-validator';
 
 export async function deployChart(
   ctx: DeployContext,
@@ -32,6 +33,15 @@ export async function deployChart(
     if (spec.render_file) {
       const rf = path.join(modDir, spec.render_file);
       if (fs.existsSync(rf)) renderJs = fs.readFileSync(rf, 'utf8');
+    }
+    if (renderJs) {
+      const v = await validateRunJS(renderJs);
+      if (!v.ok) {
+        for (const issue of v.issues) {
+          if (issue.level === 'error') log(`      ✗ chart render ${spec.render_file || ''}: ${issue.message}`);
+        }
+        return;
+      }
     }
     config = {
       query: { mode: 'sql', sql },
