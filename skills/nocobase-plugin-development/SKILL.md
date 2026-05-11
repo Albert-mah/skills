@@ -61,6 +61,18 @@ If you find yourself thinking "I need a Provider for this", stop and reconsider.
 
 All client-side plugin code must be written in `src/client-v2/`. The `src/client/` directory is for the legacy v1 client — do NOT write or modify any files there. Import `Plugin` from `@nocobase/client-v2`, never from `@nocobase/client`.
 
+## v2 mode runs under the `/v2/` URL prefix
+
+The `client-v2/` source directory corresponds to the `/v2/` runtime URL prefix. After login, users land on `/v2/admin/` by default. When telling users where to access something, use the v2 URL pattern:
+
+| What you registered | Accessible at |
+|---|---|
+| Plugin manager, built-in admin pages | `/v2/admin/` |
+| Plugin settings pages | `/v2/admin/settings/<menuKey>` |
+| Custom routes via `this.router.add('xxx', { path: '/foo' })` | `/v2/foo` (NOT `/v2/admin/foo`) |
+
+If the user says "I enabled the plugin but nothing shows up" or hits a 404, the most common cause is they are on a `/admin/...` URL (v1 plugin manager, which calls `pm:listEnabled`) instead of `/v2/admin/` (v2 plugin manager, which calls `pm:listEnabledV2`). Tell them to switch to the `/v2/` URL.
+
 # Input Contract
 
 | Input | Required | Default | Validation | Clarification Question |
@@ -197,7 +209,7 @@ Only ask about additional languages if:
 yarn pm enable <plugin_name>
 ```
 
-After enabling, describe what the user should see in the UI and how to test the plugin.
+After enabling, describe what the user should see in the UI and how to test the plugin. **When quoting URLs to the user, always use the `/v2/` prefix** (e.g., `/v2/admin/`, `/v2/admin/settings/<menuKey>`, `/v2/<custom-path>`) — see the "v2 mode runs under the `/v2/` URL prefix" rule under Hard Constraints.
 
 # Default Behaviors
 
@@ -222,7 +234,7 @@ When the plugin doesn't work as expected:
 
 ## FAQ Checklist
 
-1. **Plugin not appearing in plugin manager** → Check `package.json` has correct NocoBase metadata. Run `yarn pm enable <name>`.
+1. **Plugin not appearing in plugin manager** → In order: (a) browser URL must be `/v2/admin/`, not `/admin/...` — only the v2 plugin manager fetches via `pm:listEnabledV2` and shows v2 plugins; (b) plugin has been enabled with `yarn pm enable <name>`; (c) `package.json` has correct NocoBase metadata.
 2. **Collection not showing in block picker** → Recommend user to add the table via NocoBase UI "Data Source Management". If code-level registration is needed (demo only), use `addCollection` with `filterTargetKey: 'id'` and `eventBus` pattern. See `client/plugin.md`.
 3. **Settings page shows blank** → Verify using `componentLoader` (not `Component`) for client-v2.
 4. **Model not appearing in menus** → Check `define({ label: tExpr('...') })` and `registerModelLoaders` in plugin `load()`.

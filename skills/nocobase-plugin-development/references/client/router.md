@@ -41,7 +41,7 @@ this.pluginSettingsManager.addPageTabItem({
   title: this.t('My Feature Settings'),
   componentLoader: () => import('./pages/MySettingsPage'),
 });
-// Accessible at /admin/settings/my-feature
+// Accessible at /v2/admin/settings/my-feature
 ```
 
 ## Template: Nested Routes
@@ -81,7 +81,7 @@ this.pluginSettingsManager.addMenuItem({
   icon: 'SettingOutlined',
 });
 
-// Tab 1: General (key='index' -> /admin/settings/my-feature)
+// Tab 1: General (key='index' -> /v2/admin/settings/my-feature)
 this.pluginSettingsManager.addPageTabItem({
   menuKey: 'my-feature',
   key: 'index',
@@ -89,7 +89,7 @@ this.pluginSettingsManager.addPageTabItem({
   componentLoader: () => import('./pages/GeneralPage'),
 });
 
-// Tab 2: Advanced (-> /admin/settings/my-feature/advanced)
+// Tab 2: Advanced (-> /v2/admin/settings/my-feature/advanced)
 this.pluginSettingsManager.addPageTabItem({
   menuKey: 'my-feature',
   key: 'advanced',
@@ -129,6 +129,7 @@ ctx.router.navigate('/my-page');  // navigates to /v2/my-page
 
 ## Key Points
 
+- **All routes registered here run under the `/v2/` URL prefix.** Custom routes from `this.router.add(name, { path: '/foo' })` are accessible at `/v2/foo`; plugin settings pages are at `/v2/admin/settings/<menuKey>`. After login users land on `/v2/admin/`. If a registered page 404s, first check the browser URL is `/v2/...` and not `/admin/...` (v1).
 - `this.router.add()` first arg is route name; dot notation means nesting (`root.home` is child of `root`).
 - Always use `componentLoader` (lazy) not `Component` (eager).
 - Page files must use `export default`.
