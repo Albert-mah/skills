@@ -59,29 +59,31 @@ export function discoverPages(
     return byTitle;
   };
 
+  // Recurse into any group nesting depth. Routes 4+ levels deep (top →
+  // sub-group → sub-sub-group → page, e.g. CRM's "Main > Dashboards >
+  // More Charts > Executive") used to silently drop the leaf pages because
+  // the loop only walked 3 levels.
+  const walk = (parentDir: string, entries: RouteEntry[]): void => {
+    for (const r of entries) {
+      const rtype = r.type || (r.children ? 'group' : 'flowPage');
+      if (rtype === 'group') {
+        const groupDir = resolveDir(parentDir, r);
+        if (!fs.existsSync(groupDir)) continue;
+        walk(groupDir, r.children || []);
+      } else {
+        const p = readPageDir(resolveDir(parentDir, r), r.title, r.icon, routeKey(r));
+        if (p) pages.push(p);
+      }
+    }
+  };
+
   for (const routeEntry of routes) {
     const rtype = routeEntry.type || (routeEntry.children ? 'group' : 'flowPage');
     if (rtype === 'group') {
       if (filterGroup && routeKey(routeEntry) !== filterGroup) continue;
       const groupDir = resolveDir(pagesDir, routeEntry);
       if (!fs.existsSync(groupDir)) continue;
-
-      for (const child of routeEntry.children || []) {
-        const ctype = child.type || (child.children ? 'group' : 'flowPage');
-        if (ctype === 'flowPage') {
-          const p = readPageDir(resolveDir(groupDir, child), child.title, child.icon, routeKey(child));
-          if (p) pages.push(p);
-        } else if (ctype === 'group') {
-          const subDir = resolveDir(groupDir, child);
-          for (const sc of child.children || []) {
-            const stype = sc.type || 'flowPage';
-            if (stype === 'flowPage') {
-              const p = readPageDir(resolveDir(subDir, sc), sc.title, sc.icon, routeKey(sc));
-              if (p) pages.push(p);
-            }
-          }
-        }
-      }
+      walk(groupDir, routeEntry.children || []);
     } else if (rtype === 'flowPage' && !filterGroup) {
       const p = readPageDir(resolveDir(pagesDir, routeEntry), routeEntry.title, routeEntry.icon, routeKey(routeEntry));
       if (p) pages.push(p);

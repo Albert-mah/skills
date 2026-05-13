@@ -33,6 +33,19 @@ export function actionKey(aspec: unknown): string {
     if (base) return `jsAction_${slugify(base)}`;
   }
 
+  // templatePrint → templatePrint_<templateName>. Keeps multiple print buttons
+  // on one block (e.g. repair-order vs repair-summary) distinct by template.
+  if (atype === 'templatePrint') {
+    let tn = spec.templateName as string | undefined;
+    if (!tn) {
+      const sp0 = (spec.stepParams || {}) as Record<string, unknown>;
+      const setting = (sp0.templatePrintActionSetting || {}) as Record<string, unknown>;
+      const cfg = (setting.configTemplate || {}) as Record<string, unknown>;
+      tn = cfg.templateName as string | undefined;
+    }
+    if (tn) return `templatePrint_${slugify(tn)}`;
+  }
+
   // Extract semantic suffix from stepParams
   const sp = (spec.stepParams || {}) as Record<string, unknown>;
   const buttonSettings = sp.buttonSettings as Record<string, unknown>;

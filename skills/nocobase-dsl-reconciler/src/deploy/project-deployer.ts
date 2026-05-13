@@ -598,6 +598,52 @@ export async function deployProject(
 
 // (gitSnapshot / gitDiff removed — using worktree-based diff now)
 
+/**
+ * Recursively deploy children inside an already-created sub-group. Handles
+ * arbitrary nesting depth — a child can be either a flowPage (deploy it) or
+ * another group (recurse). Before this helper existed, deployGroup only
+ * walked 2 levels (top → subgroup → page) and silently dropped 3rd-level
+ * groups like "Main → Dashboards → More Charts → Executive".
+ */
+async function deploySubgroupChildren(
+  ctx: DeployContext,
+  children: RouteEntry[],
+  parentGroupId: number,
+  parentTitle: string,
+  pages: PageInfo[],
+  state: ModuleState,
+  stateFile: string,
+): Promise<void> {
+  const { nb, log } = ctx;
+  for (let si = 0; si < children.length; si++) {
+    const sc = children[si];
+    if (sc.type === 'group') {
+      const subSubKey = `_subgroup_${routeKey(sc)}`;
+      let ssgId = (state as unknown as Record<string, unknown>)[subSubKey] as number | undefined;
+      if (!ssgId) {
+        const result = await nb.createGroup(sc.title, sc.icon || 'folderoutlined', parentGroupId);
+        ssgId = result.routeId;
+        (state as unknown as Record<string, unknown>)[subSubKey] = ssgId;
+        log(`    + sub-sub-group: ${sc.title}`);
+      } else {
+        log(`    = sub-sub-group: ${sc.title}`);
+      }
+      await nb.http.post(`${nb.baseUrl}/api/desktopRoutes:update`, { sort: si + 1 }, { params: { 'filter[id]': ssgId } }).catch(() => {});
+      await deploySubgroupChildren(ctx, sc.children || [], ssgId, sc.title, pages, state, stateFile);
+      continue;
+    }
+    const pageInfo = pages.find(p => p.key === routeKey(sc));
+    if (!pageInfo) continue;
+    await deployPageBlueprint(ctx, pageInfo, state, parentGroupId, parentTitle);
+    const pageKey = pageInfo.key;
+    const routeId = (state.pages[pageKey] as Record<string, unknown>)?.route_id as number | undefined;
+    if (routeId) {
+      await nb.http.post(`${nb.baseUrl}/api/desktopRoutes:update`, { sort: si + 1 }, { params: { 'filter[id]': routeId } }).catch(() => {});
+    }
+    saveYaml(stateFile, state);
+  }
+}
+
 async function deployGroup(
   ctx: DeployContext,
   routeEntry: RouteEntry,
@@ -657,21 +703,7 @@ async function deployGroup(
         }
         // Set sort on sub-group to match declaration order
         await nb.http.post(`${nb.baseUrl}/api/desktopRoutes:update`, { sort: ci + 1 }, { params: { 'filter[id]': subGroupId } }).catch(() => {});
-        const subChildren = child.children || [];
-        for (let si = 0; si < subChildren.length; si++) {
-          const sc = subChildren[si];
-          const pageInfo = pages.find(p => p.key === routeKey(sc));
-          if (pageInfo) {
-            await deployPageBlueprint(ctx, pageInfo, state, subGroupId, child.title);
-            // Set sort on sub-group child
-            const pageKey = pageInfo.key;
-            const routeId = (state.pages[pageKey] as Record<string, unknown>)?.route_id as number | undefined;
-            if (routeId) {
-              await nb.http.post(`${nb.baseUrl}/api/desktopRoutes:update`, { sort: si + 1 }, { params: { 'filter[id]': routeId } }).catch(() => {});
-            }
-            saveYaml(stateFile, state);
-          }
-        }
+        await deploySubgroupChildren(ctx, child.children || [], subGroupId, child.title, pages, state, stateFile);
       }
     }
     return;
@@ -736,34 +768,57 @@ async function deployGroup(
       }
       // Set sort on sub-group
       await nb.http.post(`${nb.baseUrl}/api/desktopRoutes:update`, { sort: ci + 1 }, { params: { 'filter[id]': subGroupId } }).catch(() => {});
-      const subChildren = child.children || [];
-      for (let si = 0; si < subChildren.length; si++) {
-        const sc = subChildren[si];
-        const pageInfo = pages.find(p => p.title === sc.title);
-        if (pageInfo) {
-          try { await deployOnePage(ctx, pageInfo, state, subGroupId); }
-          catch (e) {
-          const err = e as any;
-          const apiData = err.response?.data ? ` body=${JSON.stringify(err.response.data).slice(0, 300)}` : '';
-          const apiUrl = err.response?.config?.url ? ` [${err.response.config.method} ${err.response.config.url}]` : (err.config?.url ? ` [${err.config.method} ${err.config.url}]` : '');
-          log(`  ✗ page ${pageInfo.title}: ${err.message || e}${apiUrl}${apiData}`);
-          if (process.env.NB_DEBUG) {
-            log(`    [debug] err keys: ${Object.keys(err || {}).join(',') || '(none)'}`);
-            log(`    [debug] err.status=${err.status} err.code=${err.code} err.name=${err.name} isAxios=${err.isAxiosError}`);
-            if (err.response) log(`    [debug] resp status=${err.response.status} url=${err.response.config?.url}`);
-            log(`    [debug] stack: ${(err.stack || '').split('\n').slice(0, 6).join(' || ')}`);
-          }
-        }
-          // Set sort on sub-group child
-          const pageKey = pageInfo.key;
-          const routeId = (state.pages[pageKey] as Record<string, unknown>)?.route_id as number | undefined;
-          if (routeId) {
-            await nb.http.post(`${nb.baseUrl}/api/desktopRoutes:update`, { sort: si + 1 }, { params: { 'filter[id]': routeId } }).catch(() => {});
-          }
-          saveYaml(legacyStateFile, state);
-        }
-      }
+      await deployLegacySubgroupChildren(ctx, child.children || [], subGroupId, pages, state, legacyStateFile);
     }
+  }
+}
+
+/**
+ * Legacy-mode counterpart of deploySubgroupChildren. Same recursion shape but
+ * routes pages through deployOnePage (multi-step save_model path) instead of
+ * deployPageBlueprint. Handles arbitrarily-deep nested groups so structures
+ * like "Main → Dashboards → More Charts → Executive" deploy correctly.
+ */
+async function deployLegacySubgroupChildren(
+  ctx: DeployContext,
+  children: RouteEntry[],
+  parentGroupId: number,
+  pages: PageInfo[],
+  state: ModuleState,
+  legacyStateFile: string,
+): Promise<void> {
+  const { nb, log } = ctx;
+  for (let si = 0; si < children.length; si++) {
+    const sc = children[si];
+    if (sc.type === 'group') {
+      const ssgKey = `_subgroup_${routeKey(sc)}`;
+      let ssgId = (state as unknown as Record<string, unknown>)[ssgKey] as number | undefined;
+      if (!ssgId) {
+        const result = await nb.createGroup(sc.title, sc.icon || 'folderoutlined', parentGroupId);
+        ssgId = result.routeId;
+        (state as unknown as Record<string, unknown>)[ssgKey] = ssgId;
+        log(`    + sub-sub-group: ${sc.title}`);
+      } else {
+        log(`    = sub-sub-group: ${sc.title}`);
+      }
+      await nb.http.post(`${nb.baseUrl}/api/desktopRoutes:update`, { sort: si + 1 }, { params: { 'filter[id]': ssgId } }).catch(() => {});
+      await deployLegacySubgroupChildren(ctx, sc.children || [], ssgId, pages, state, legacyStateFile);
+      continue;
+    }
+    const pageInfo = pages.find(p => p.title === sc.title) || pages.find(p => p.key === routeKey(sc));
+    if (!pageInfo) continue;
+    try { await deployOnePage(ctx, pageInfo, state, parentGroupId); }
+    catch (e) {
+      const err = e as any;
+      const apiData = err.response?.data ? ` body=${JSON.stringify(err.response.data).slice(0, 300)}` : '';
+      const apiUrl = err.response?.config?.url ? ` [${err.response.config.method} ${err.response.config.url}]` : (err.config?.url ? ` [${err.config.method} ${err.config.url}]` : '');
+      log(`  ✗ page ${pageInfo.title}: ${err.message || e}${apiUrl}${apiData}`);
+    }
+    const routeId = (state.pages[pageInfo.key] as Record<string, unknown>)?.route_id as number | undefined;
+    if (routeId) {
+      await nb.http.post(`${nb.baseUrl}/api/desktopRoutes:update`, { sort: si + 1 }, { params: { 'filter[id]': routeId } }).catch(() => {});
+    }
+    saveYaml(legacyStateFile, state);
   }
 }
 

@@ -163,6 +163,59 @@ export function simplifyDataScope(dataScope: Record<string, unknown>): Record<st
 }
 
 /**
+ * Simplify a templatePrint action (from @nocobase/plugin-action-template-print).
+ *
+ * Two NB models collapse into the same DSL type:
+ *   TemplatePrintRecordActionModel     → row / detail block button (rootDataType=map)
+ *   TemplatePrintCollectionActionModel → list toolbar button      (rootDataType=array)
+ *
+ * The distinguishing factor is *position* in the DSL (`recordActions:` vs
+ * `actions:`), not the `type` string. Deploy picks the right model back
+ * based on position.
+ *
+ * Shorthand output:
+ *   - type: templatePrint
+ *     templateName: repair_order
+ *     convertedToPDF: true           # optional — only when truthy
+ *     style: primary                 # optional — only when not 'default'
+ *     title: 打印维修单               # optional — only when set
+ *     icon: PrinterOutlined          # optional — only when set
+ *     key: <auto>
+ */
+export function simplifyTemplatePrintAction(actionSpec: Record<string, unknown>): Record<string, unknown> {
+  const sp = actionSpec.stepParams as Record<string, unknown> | undefined;
+  const result: Record<string, unknown> = { type: 'templatePrint' };
+
+  if (actionSpec.key) result.key = actionSpec.key;
+  if (!sp) return result;
+
+  const setting = (sp.templatePrintActionSetting || {}) as Record<string, unknown>;
+  const configTemplate = (setting.configTemplate || {}) as Record<string, unknown>;
+  const templateName = configTemplate.templateName as string | undefined;
+  const convertedToPDF = setting.convertedToPDF as Record<string, unknown> | boolean | undefined;
+
+  if (templateName) result.templateName = templateName;
+
+  // convertedToPDF lives at two possible nesting depths depending on NB
+  // version — top-level boolean or `{ convertedToPDF: true }` nested.
+  let pdfFlag = false;
+  if (typeof convertedToPDF === 'boolean') pdfFlag = convertedToPDF;
+  else if (convertedToPDF && typeof convertedToPDF === 'object') {
+    pdfFlag = (convertedToPDF as Record<string, unknown>).convertedToPDF === true;
+  }
+  if (pdfFlag) result.convertedToPDF = true;
+
+  const buttonSettings = sp.buttonSettings as Record<string, unknown> | undefined;
+  const general = (buttonSettings?.general || {}) as Record<string, unknown>;
+  if (general.title) result.title = general.title;
+  if (general.icon) result.icon = general.icon;
+  const style = general.type as string | undefined;
+  if (style && style !== 'default') result.style = style;
+
+  return result;
+}
+
+/**
  * Simplify an updateRecord action from full stepParams into shorthand.
  */
 export function simplifyUpdateRecord(actionSpec: Record<string, unknown>): Record<string, unknown> {

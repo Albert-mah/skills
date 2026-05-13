@@ -79,6 +79,10 @@ export const ACTION_REGISTRY: ActionTypeEntry[] = [
   { type: 'addChild',       model: 'AddChildActionModel',                      composable: false, fillable: false, simple: false },
   { type: 'historyExpand',  model: 'RecordHistoryExpandActionModel',           composable: false, fillable: false, simple: true },
   { type: 'historyCollapse', model: 'RecordHistoryCollapseActionModel',        composable: false, fillable: false, simple: true },
+  // Template-print plugin — the record variant is canonical; the collection
+  // (toolbar-on-list) variant is registered as an alias below. Deploy picks
+  // the right model based on action position (record vs toolbar).
+  { type: 'templatePrint',  model: 'TemplatePrintRecordActionModel',           composable: false, fillable: false, simple: false },
   // JS-driven custom action button (renders arbitrary React inside an action
   // slot). Backed by NB's JSItemActionModel — registered for all action
   // scenes (toolbar, record, form, popup sub-table form).
@@ -97,6 +101,7 @@ export const ACTION_MODEL_ALIASES: Record<string, string> = {
   FilterFormSubmitActionModel: 'submit',
   FilterFormResetActionModel: 'reset',
   FilterFormCollapseActionModel: 'collapse',
+  TemplatePrintCollectionActionModel: 'templatePrint',
 };
 
 // ─── Derived maps (block types) ───

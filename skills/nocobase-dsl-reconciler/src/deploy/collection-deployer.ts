@@ -16,12 +16,27 @@ import { catchSwallow } from '../utils/swallow';
  * collections:apply accepts compact fields: { name, interface, title, target, foreignKey, enum }
  * Server auto-derives: type, uiSchema, component, etc.
  */
+// NB server SHOULD auto-derive `type` from `interface`, but current versions
+// silently fall back to 'string' for date-family interfaces — Copy push then
+// builds varchar columns and SQL charts using TO_CHAR/<date-fn> fail with
+// "function does not exist". Pin these explicitly.
+// See: memory/nocobase_dateonly_type_drift.md
+const INTERFACE_TO_TYPE: Record<string, string> = {
+  dateOnly: 'dateOnly',
+  date: 'date',
+  datetime: 'date',
+  datetimeNoTz: 'datetimeNoTz',
+  unixTimestamp: 'unixTimestamp',
+  time: 'time',
+};
+
 function toApplyField(fd: FieldDef): Record<string, unknown> {
   const field: Record<string, unknown> = {
     name: fd.name,
     interface: fd.interface,
     title: fd.title,
   };
+  if (INTERFACE_TO_TYPE[fd.interface]) field.type = INTERFACE_TO_TYPE[fd.interface];
 
   // Relation fields — skip if missing required target
   const RELATION_INTERFACES = new Set(['m2o', 'o2m', 'm2m', 'o2o']);

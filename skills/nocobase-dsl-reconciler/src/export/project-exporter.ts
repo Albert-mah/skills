@@ -222,6 +222,15 @@ export async function exportProject(
   // Generate defaults.yaml from high-usage popup templates
   await exportDefaults(nb, outDir);
 
+  // Printing templates (plugin-action-template-print): pull metadata +
+  // docx/xlsx/pptx files. Scoped by collectionName when --group is set.
+  try {
+    const { exportPrintingTemplates } = await import('../printing-templates/exporter');
+    await exportPrintingTemplates(nb, outDir, groupMatches ? usedColls : undefined);
+  } catch (e) {
+    console.log(`  ! printing-templates: ${e instanceof Error ? e.message.slice(0, 80) : e}`);
+  }
+
   // Workflows are part of "everything pullable" — the symmetric pair to push.
   // When --group is set, filter workflows whose trigger collection is in the
   // scoped collection set; otherwise pull all.

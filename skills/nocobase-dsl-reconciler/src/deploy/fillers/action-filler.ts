@@ -92,7 +92,17 @@ export async function deployActions(
 
   for (const aspec of allActions) {
     const atype = typeof aspec === 'string' ? aspec : (aspec as Record<string, unknown>).type as string;
-    const amodel = ALL_ACTION_MAP[atype];
+    const isRecordAction = (bs.recordActions || []).includes(aspec);
+    let amodel = ALL_ACTION_MAP[atype];
+    // templatePrint has two backing models — the plugin picks Record vs
+    // Collection by where the button lives, so we mirror that: record
+    // position (recordActions, or block-in-record-context like details /
+    // list / gridCard) → Record model; toolbar on table → Collection.
+    if (atype === 'templatePrint') {
+      amodel = (isRecordAction || isRecordActionBlock)
+        ? 'TemplatePrintRecordActionModel'
+        : 'TemplatePrintCollectionActionModel';
+    }
     if (!amodel) continue;
 
     let actionSp = typeof aspec === 'object' ? (aspec as Record<string, unknown>).stepParams as Record<string, unknown> || {} : {};
@@ -123,6 +133,14 @@ export async function deployActions(
       const spec = aspec as Record<string, unknown>;
       if (!Object.keys(actionSp).length && (spec.assign || spec.title || spec.icon)) {
         actionSp = buildUpdateRecordStepParams(spec);
+      }
+    }
+
+    // templatePrint shorthand: { type: templatePrint, templateName, convertedToPDF?, title?, icon?, style? }
+    if (atype === 'templatePrint' && typeof aspec === 'object') {
+      const spec = aspec as Record<string, unknown>;
+      if (!Object.keys(actionSp).length && spec.templateName) {
+        actionSp = buildTemplatePrintStepParams(spec);
       }
     }
 
@@ -168,7 +186,6 @@ export async function deployActions(
       }
     }
 
-    const isRecordAction = (bs.recordActions || []).includes(aspec);
     const stateKey = isRecordAction ? 'record_actions' : 'actions';
     if (!blockState[stateKey]) blockState[stateKey] = {};
     const existingGroup = blockState[stateKey]!;
@@ -294,6 +311,28 @@ async function reorderActions(
 }
 
 // ── Compact action format builders ──
+
+function buildTemplatePrintStepParams(spec: Record<string, unknown>): Record<string, unknown> {
+  const templateName = spec.templateName as string;
+  const convertedToPDF = spec.convertedToPDF === true;
+  const title = spec.title as string | undefined;
+  const icon = spec.icon as string | undefined;
+  const style = (spec.style as string | undefined);
+
+  const general: Record<string, unknown> = {};
+  if (style) general.type = style;
+  if (title) general.title = title;
+  if (icon) general.icon = icon;
+
+  const stepParams: Record<string, unknown> = {
+    templatePrintActionSetting: {
+      configTemplate: { templateName },
+      ...(convertedToPDF ? { convertedToPDF: true } : {}),
+    },
+  };
+  if (Object.keys(general).length) stepParams.buttonSettings = { general };
+  return stepParams;
+}
 
 function buildLinkStepParams(spec: Record<string, unknown>): Record<string, unknown> {
   const title = (spec.title || '') as string;

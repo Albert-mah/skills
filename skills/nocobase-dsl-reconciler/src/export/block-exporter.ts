@@ -25,6 +25,7 @@ import {
   simplifyJsBlock,
   simplifyDataScope,
   simplifyUpdateRecord,
+  simplifyTemplatePrintAction,
   resolveRuleFieldUids,
 } from './simplifiers';
 
@@ -507,6 +508,8 @@ function exportTableContents(
           actColActions.push(simplifyUpdateRecord(actionSpec));
         } else if (atype === 'link') {
           actColActions.push(simplifyLinkAction(actionSpec));
+        } else if (atype === 'templatePrint') {
+          actColActions.push(simplifyTemplatePrintAction(actionSpec));
         } else {
           // Apply stripDefaults to stepParams
           if (actionSpec.stepParams) actionSpec.stepParams = stripDefaults(actionSpec.stepParams);
@@ -1003,6 +1006,12 @@ async function exportActions(
         }
         actionSpec.key = genActionKey(actionSpec);
         target.push(actionSpec);
+      } else if (atype === 'templatePrint') {
+        const sp = (act.stepParams || {}) as Record<string, unknown>;
+        const actionSpec: Record<string, unknown> = { type: atype };
+        if (Object.keys(sp).length) actionSpec.stepParams = sp;
+        actionSpec.key = genActionKey(actionSpec);
+        target.push(simplifyTemplatePrintAction(actionSpec));
       } else if (atype === 'jsAction') {
         // JS-driven custom action button (NB's JSItemActionModel). Mirrors
         // the jsBlock export pattern: dump the JS body to ./js/<key>.js and
