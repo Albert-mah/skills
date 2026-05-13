@@ -227,6 +227,101 @@ export async function validateAssignValues(
   }
 }
 
+// ─── page-blueprint-prepare.js ───
+
+export interface BlueprintPrepareResult {
+  ok: boolean;
+  warnings: readonly string[];
+  errors: readonly BridgeRuleIssue[];
+  /** Set when the module loaded — used to distinguish "no issues" from "didn't run". */
+  ran: boolean;
+}
+
+interface PageBlueprintPrepareModule {
+  prepareApplyBlueprintRequest?: (
+    input: unknown,
+    options?: Record<string, unknown>,
+  ) => {
+    ok?: boolean;
+    warnings?: unknown;
+    errors?: unknown;
+  };
+}
+
+let blueprintPreparePromise: Promise<PageBlueprintPrepareModule | null> | null = null;
+function loadBlueprintPrepare(): Promise<PageBlueprintPrepareModule | null> {
+  if (!blueprintPreparePromise) {
+    blueprintPreparePromise = (async () => {
+      try {
+        const mod = (await import(
+          resolveUbModule('page-blueprint-prepare.js')
+        )) as PageBlueprintPrepareModule;
+        if (typeof mod.prepareApplyBlueprintRequest !== 'function') return null;
+        return mod;
+      } catch {
+        return null;
+      }
+    })();
+  }
+  return blueprintPreparePromise;
+}
+
+const EMPTY_BLUEPRINT_RESULT: BlueprintPrepareResult = Object.freeze({
+  ok: true,
+  warnings: Object.freeze([]),
+  errors: Object.freeze([]),
+  ran: false,
+});
+
+/**
+ * Run kernel-aware shape + semantic checks on a blueprint document.
+ *
+ * Currently UNWIRED. The kernel's prepare-validator is designed for hand-
+ * authored blueprints (ui-builder mode) and applies stricter conventions
+ * than NB's `flow-surfaces:applyBlueprint` runtime. Our DSL → blueprint
+ * conversion legitimately produces shapes that the prepare-validator flags
+ * as errors (duplicate block keys across tabs, multi-tab pages with the
+ * default `expectedOuterTabs: 1`, ant-design icon casing, chart shape).
+ *
+ * NB's applyBlueprint accepts our output; wiring this validator default-on
+ * would generate ~200 false-positive errors per CRM workspace push.
+ *
+ * Reserved for opt-in diagnostic use (e.g. a future `cli check-blueprint`
+ * subcommand) and for future use cases where DSL conventions catch up to
+ * ui-builder's stricter mode.
+ *
+ * `ran: false` distinguishes "bridge unavailable, treat as no issues" from
+ * "bridge ran and found nothing". Callers should ignore issues when `!ran`.
+ */
+export async function validateBlueprintShape(
+  blueprint: unknown,
+  options: Record<string, unknown> = {},
+): Promise<BlueprintPrepareResult> {
+  const mod = await loadBlueprintPrepare();
+  const fn = mod?.prepareApplyBlueprintRequest;
+  if (typeof fn !== 'function') return EMPTY_BLUEPRINT_RESULT;
+  try {
+    const raw = fn(blueprint, options);
+    const ok = raw?.ok !== false;
+    const warnings = Array.isArray(raw?.warnings) ? (raw.warnings as unknown[]).map(String) : [];
+    const rawErrors = Array.isArray(raw?.errors) ? (raw.errors as unknown[]) : [];
+    const errors: BridgeRuleIssue[] = [];
+    for (const e of rawErrors) {
+      if (!e || typeof e !== 'object') continue;
+      const eo = e as Record<string, unknown>;
+      errors.push({
+        path: String(eo.path ?? ''),
+        ruleId: String(eo.ruleId ?? ''),
+        message: String(eo.message ?? ''),
+        ...(typeof eo.code === 'string' ? { code: eo.code } : {}),
+      });
+    }
+    return { ok, warnings, errors, ran: true };
+  } catch {
+    return EMPTY_BLUEPRINT_RESULT;
+  }
+}
+
 // ─── Diagnostics ───
 
 /**
