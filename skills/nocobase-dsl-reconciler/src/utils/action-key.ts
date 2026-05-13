@@ -26,6 +26,13 @@ export function actionKey(aspec: unknown): string {
     return `ai_${slugify(spec.employee as string)}`;
   }
 
+  // jsAction → jsAction_<file-basename> (file is the natural identity since
+  // title may be set inside the JS code at runtime, not in DSL spec)
+  if (atype === 'jsAction' && spec.file) {
+    const base = (spec.file as string).replace(/^.*[\\/]/, '').replace(/\.[mc]?[jt]sx?$/i, '');
+    if (base) return `jsAction_${slugify(base)}`;
+  }
+
   // Extract semantic suffix from stepParams
   const sp = (spec.stepParams || {}) as Record<string, unknown>;
   const buttonSettings = sp.buttonSettings as Record<string, unknown>;

@@ -1003,6 +1003,32 @@ async function exportActions(
         }
         actionSpec.key = genActionKey(actionSpec);
         target.push(actionSpec);
+      } else if (atype === 'jsAction') {
+        // JS-driven custom action button (NB's JSItemActionModel). Mirrors
+        // the jsBlock export pattern: dump the JS body to ./js/<key>.js and
+        // emit `{ type: jsAction, file, key, title?, icon? }` in the layout.
+        const sp = (act.stepParams || {}) as Record<string, unknown>;
+        const jsSettings = (sp.jsSettings || {}) as Record<string, unknown>;
+        const runJs = (jsSettings.runJs || {}) as Record<string, unknown>;
+        const code = runJs.code as string | undefined;
+        const version = runJs.version as string | undefined;
+        const buttonSettings = (sp.buttonSettings || {}) as Record<string, unknown>;
+        const general = (buttonSettings.general || {}) as Record<string, unknown>;
+
+        const actionSpec: Record<string, unknown> = { type: 'jsAction' };
+        if (jsDir && code) {
+          const fileBase = `${prefix || 'page'}_${blockKey}_${slugify(
+            (general.title as string) || 'jsAction',
+          )}.js`;
+          safeWrite(path.join(jsDir, fileBase), stripAutoHeader(code));
+          actionSpec.file = `./js/${fileBase}`;
+        }
+        if (general.title) actionSpec.title = general.title;
+        if (general.icon) actionSpec.icon = general.icon;
+        if (general.type && general.type !== 'default') actionSpec.style = general.type;
+        if (version && version !== 'v2') actionSpec.version = version;
+        actionSpec.key = genActionKey(actionSpec);
+        target.push(actionSpec);
       } else {
         // For actions with stepParams (popup buttons, etc.)
         const sp = (act.stepParams || {}) as Record<string, unknown>;

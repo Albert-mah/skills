@@ -10,6 +10,8 @@
  * removed from state. state.yaml is the "this-tool deployed" ledger, so
  * manually-authored NB actions (never in state) are left alone — safe.
  */
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type { BlockSpec } from '../../types/spec';
 import type { BlockState } from '../../types/state';
 import type { NocoBaseClient } from '../../client';
@@ -17,6 +19,8 @@ import type { DeployContext } from './types';
 import { generateUid } from '../../utils/uid';
 import { buildAiButton } from './ai-button';
 import { actionKey as genActionKey, deduplicateKey } from '../../utils/action-key';
+import { ensureJsHeader } from '../../utils/js-utils';
+import { validateRunJS } from '../../utils/runjs-validator';
 import {
   FILLABLE_ACTION_TYPE_TO_MODEL,
   NON_COMPOSE_ACTION_TYPE_TO_MODEL as NON_COMPOSE_ACTION_MAP,
@@ -119,6 +123,48 @@ export async function deployActions(
       const spec = aspec as Record<string, unknown>;
       if (!Object.keys(actionSp).length && (spec.assign || spec.title || spec.icon)) {
         actionSp = buildUpdateRecordStepParams(spec);
+      }
+    }
+
+    // jsAction shorthand: { type: jsAction, file: ./js/<name>.js, key, desc?, title?, icon? }
+    // Loads code from file, validates via runjs validator, writes to
+    // stepParams.jsSettings.runJs. Mirrors the jsBlock / jsItem / jsColumn
+    // pattern but binds the action to NB's JSItemActionModel.
+    if (atype === 'jsAction' && typeof aspec === 'object') {
+      const spec = aspec as Record<string, unknown>;
+      const filePath = spec.file as string | undefined;
+      if (filePath) {
+        const absPath = path.join(modDir, filePath);
+        if (fs.existsSync(absPath)) {
+          const raw = fs.readFileSync(absPath, 'utf8');
+          const v = await validateRunJS(raw);
+          if (!v.ok) {
+            for (const issue of v.issues) {
+              if (issue.level === 'error') log(`      ✗ jsAction ${filePath}: ${issue.message}`);
+            }
+            continue;
+          }
+          const code = ensureJsHeader(raw, {
+            desc: (spec.desc || spec.title) as string | undefined,
+            jsType: 'JSItemActionModel',
+          });
+          const version = (spec.version as string) || 'v2';
+          actionSp = {
+            jsSettings: { runJs: { code, version } },
+            ...(spec.title || spec.icon || spec.style ? {
+              buttonSettings: {
+                general: {
+                  ...(spec.title ? { title: spec.title } : {}),
+                  ...(spec.icon ? { icon: spec.icon } : {}),
+                  ...(spec.style ? { type: spec.style } : {}),
+                },
+              },
+            } : {}),
+          };
+        } else {
+          log(`      ! jsAction ${filePath}: file not found`);
+          continue;
+        }
       }
     }
 

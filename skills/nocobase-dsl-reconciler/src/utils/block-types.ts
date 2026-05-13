@@ -79,6 +79,11 @@ export const ACTION_REGISTRY: ActionTypeEntry[] = [
   { type: 'addChild',       model: 'AddChildActionModel',                      composable: false, fillable: false, simple: false },
   { type: 'historyExpand',  model: 'RecordHistoryExpandActionModel',           composable: false, fillable: false, simple: true },
   { type: 'historyCollapse', model: 'RecordHistoryCollapseActionModel',        composable: false, fillable: false, simple: true },
+  // JS-driven custom action button (renders arbitrary React inside an action
+  // slot). Backed by NB's JSItemActionModel — registered for all action
+  // scenes (toolbar, record, form, popup sub-table form).
+  // DSL shape: { type: jsAction, file: ./js/<name>.js, key, desc?, title? }
+  { type: 'jsAction',       model: 'JSItemActionModel',                        composable: false, fillable: false, simple: false },
 ];
 
 /**
@@ -200,6 +205,7 @@ export const RECONCILER_JS_MODEL_USES: readonly string[] = Object.freeze([
   'JSBlockModel',
   'JSItemModel',
   'JSColumnModel',
+  'JSItemActionModel',
 ]);
 
 // ─── Legacy aliases (backward compatibility with utils/index.ts re-exports) ───
