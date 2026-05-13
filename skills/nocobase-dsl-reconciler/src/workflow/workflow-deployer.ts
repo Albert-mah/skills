@@ -311,10 +311,83 @@ export async function deployWorkflows(
     }
   }
 
+  // ── Stale state pruning ──
+  // Two cases drop entries from workflow-state.yaml (state-only, never touches NB):
+  //   1. DSL removed: slug no longer has workflows/<slug>/workflow.yaml on disk.
+  //      User deleted the workflow from the project — drop the state entry.
+  //      We don't auto-destroy the NB workflow because it may still be in use
+  //      via another deploy or hand-edited on NB.
+  //   2. NB deleted externally: state has an id but NB returned no matching
+  //      title in the existingWfs list AND the id isn't reachable. Next deploy
+  //      would create a fresh duplicate-named workflow; pruning lets the next
+  //      run create a clean replacement under the same slug.
+  await pruneStaleWorkflowState(nb, stateFile, wfDirs, existingWfs, log);
+
   // Write updated state
   saveYaml(stateFilePath, stateFile);
   log(`  + workflow-state.yaml updated`);
   return keyMap;
+}
+
+/**
+ * Remove stale entries from workflow-state.yaml.
+ *
+ * Pure local cleanup — never destroys NB workflows. Two prune cases:
+ *   - DSL slug no longer on disk (user deleted workflows/<slug>/)
+ *   - State id can't be fetched from NB (deleted externally on NB UI)
+ *
+ * The NB fetch tolerates 404 individually so one missing id doesn't abort the
+ * pass. Mutates stateFile.workflows in place. Exported so test-phase3.ts can
+ * exercise it without standing up a full deploy.
+ */
+export async function pruneStaleWorkflowState(
+  nb: NocoBaseClient,
+  stateFile: WorkflowStateFile,
+  wfDirs: string[],
+  existingWfs: ApiWorkflow[],
+  log: (msg: string) => void,
+): Promise<void> {
+  const onDisk = new Set(wfDirs);
+  const liveIds = new Set<number>();
+  for (const wf of existingWfs) {
+    if (typeof wf.id === 'number') liveIds.add(wf.id);
+  }
+
+  for (const slug of Object.keys(stateFile.workflows)) {
+    const entry = stateFile.workflows[slug];
+
+    // Case 1: DSL removed
+    if (!onDisk.has(slug)) {
+      delete stateFile.workflows[slug];
+      log(`  - workflow-state: drop "${slug}" (DSL removed)`);
+      continue;
+    }
+
+    // Case 2: NB row gone. existingWfs is filtered to current:true workflows,
+    // so older revisions still in NB show as "missing" — only treat as gone
+    // when there's no title-match alternative the deploy can recover via.
+    const stateId = (entry as { id?: number })?.id;
+    if (typeof stateId !== 'number' || liveIds.has(stateId)) continue;
+
+    // Probe directly. workflows:get with filterByTk lets us distinguish
+    // "404 deleted" from "exists but not in current set" — the deploy loop
+    // already would have updated state if titleToExisting matched, so a
+    // truly-stale id here is safe to drop. Tolerate any error: if probe
+    // itself fails (auth, network), leave the entry alone for the next run.
+    try {
+      const resp = await nb.http.get(`${nb.baseUrl}/api/workflows:get`, {
+        params: { filterByTk: stateId },
+        validateStatus: () => true,
+      });
+      const ok = resp.status === 200 && resp.data?.data?.id === stateId;
+      if (!ok) {
+        delete stateFile.workflows[slug];
+        log(`  - workflow-state: drop "${slug}" (NB id ${stateId} not found)`);
+      }
+    } catch {
+      // probe failed — keep state, will retry next deploy
+    }
+  }
 }
 
 /**

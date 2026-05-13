@@ -83,6 +83,16 @@ if [ "$OFFLINE" = "0" ]; then
   ok "NB reachable at $NB_URL"
 fi
 
+# ───── Stage 0.5: Offline unit tests (Phase 3 + B + C) ─────
+stage "Stage 0.5: Phase 3 + B + C unit tests"
+if (cd "$SKILL_ROOT" && npx tsx src/test-phase3.ts > "$E2E_DIR/unit-tests.log" 2>&1); then
+  pass_count=$(grep -c "^  PASS" "$E2E_DIR/unit-tests.log" || echo 0)
+  ok "phase3/B/C tests: $pass_count passed"
+else
+  warn "see $E2E_DIR/unit-tests.log"
+  die "phase3/B/C unit tests failed"
+fi
+
 # ───── Stage 1: pull crm ─────
 stage_1_pull() {
   stage "Stage 1: pull crm → /tmp/e2e/pulled"
@@ -219,10 +229,13 @@ stage_4b_workflow_roundtrip() {
     rm -rf "$WS_DIR"
     die "workflow push failed"
   fi
+  # Accept create, update, or revision — the deploy is successful either way.
+  # Earlier versions only checked "created", which falsely failed on re-runs
+  # where prior executions had frozen the workflow into a revision path.
   local DEPLOYED
-  DEPLOYED=$(grep -cE '\+ [a-z_]+: created workflow' "$E2E_DIR/wf-push.log" || true)
-  info "workflows created: $DEPLOYED"
-  [ "$DEPLOYED" -ge 1 ] || { rm -rf "$WS_DIR"; die "no workflow created — deployer regression"; }
+  DEPLOYED=$(grep -cE '[+~*] [a-z_]+: (created|updated|frozen)' "$E2E_DIR/wf-push.log" || true)
+  info "workflows deployed: $DEPLOYED"
+  [ "$DEPLOYED" -ge 1 ] || { rm -rf "$WS_DIR"; die "no workflow deployed — deployer regression"; }
 
   # --- 2. RUN: enable the workflow, create a triggering row, verify execution ---
   local TOKEN
