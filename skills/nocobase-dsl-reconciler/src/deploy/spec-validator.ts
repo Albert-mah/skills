@@ -11,6 +11,7 @@ import type { PageInfo } from './page-discovery';
 import { loadYaml } from '../utils/yaml';
 import { catchSwallow } from '../utils/swallow';
 import { buildCollectionMetadata } from './collection-metadata';
+import { validateAssignValues } from '../utils/ui-builder-bridge';
 
 export interface SpecIssue {
   level: 'error' | 'warn';
@@ -387,6 +388,68 @@ export function validatePageSpecs(pages: PageInfo[], projectDir: string): SpecIs
     }
   }
 
+  return issues;
+}
+
+/**
+ * Async second-pass validator — kernel-aware assign-values check.
+ *
+ * Sync `validatePageSpecs` covers structural rules that don't need ui-builder.
+ * This pass scans every `recordActions[].assign: {...}` on tables/lists and
+ * confirms each key is a real field on the block's target collection.
+ *
+ * Why separated: ui-builder's `collectAssignValuesValidationIssues` is loaded
+ * via lazy ESM import (the whole bridge is async). Threading async through
+ * the sync validator would cascade into every helper. A second pass keeps
+ * the sync path simple and lets us no-op when the bridge can't load.
+ *
+ * No-op when the project has no `collections/` (bridge needs the field set).
+ */
+export async function validatePageSpecsAssignValues(
+  pages: PageInfo[],
+  projectDir: string,
+): Promise<SpecIssue[]> {
+  const issues: SpecIssue[] = [];
+  const meta = buildCollectionMetadata(projectDir);
+  const fieldsByColl = meta.fieldsByCollName;
+  if (!fieldsByColl.size) return issues; // no collections — nothing to validate
+
+  for (const page of pages) {
+    const tabs = page.layout.tabs;
+    const allBlocks = tabs ? tabs.flatMap(t => t.blocks || []) : (page.layout.blocks || []);
+    for (const tb of allBlocks) {
+      const blockColl = tb.coll;
+      if (!blockColl) continue;
+      const fieldNames = fieldsByColl.get(blockColl);
+      if (!fieldNames) continue; // unknown collection — sync validator already warned
+
+      const recordActions = (tb.recordActions || []) as unknown[];
+      for (const ra of recordActions) {
+        if (!ra || typeof ra !== 'object') continue;
+        const raObj = ra as Record<string, unknown>;
+        if (raObj.type !== 'updateRecord') continue;
+        const assign = raObj.assign;
+        if (!assign || typeof assign !== 'object' || !Object.keys(assign as object).length) continue;
+
+        const key = (raObj.key as string) || 'updateRecord';
+        const bridgeIssues = await validateAssignValues(
+          assign,
+          blockColl,
+          fieldNames,
+          `recordActions[${key}].assign`,
+          `recordActions[${key}].assign`,
+        );
+        for (const bi of bridgeIssues) {
+          issues.push({
+            level: 'error',
+            page: page.title,
+            block: tb.key || tb.type,
+            message: bi.message,
+          });
+        }
+      }
+    }
+  }
   return issues;
 }
 

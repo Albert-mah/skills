@@ -17,6 +17,7 @@ import { fixDisplayModels } from '../display-model-fixer';
 import { ensureJsHeader, replaceJsUids } from '../../utils/js-utils';
 import { generateUid } from '../../utils/uid';
 import { catchSwallow } from '../../utils/swallow';
+import { validateRunJS } from '../../utils/runjs-validator';
 import {
   deployClickToOpen,
   configureFilter,
@@ -243,19 +244,14 @@ export async function fillBlock(
     const jsPath = path.join(mod, bs.file);
     if (fs.existsSync(jsPath)) {
       let code = fs.readFileSync(jsPath, 'utf8');
-      // Validate JS code — strip strings before checking for {{var}} patterns
-      // so we don't false-positive on i18n calls like t('{{count}}m ago', ...).
-      const codeNoStrings = code
-        .replace(/`(?:\\.|[^`\\])*`/g, '""')
-        .replace(/'(?:\\.|[^'\\])*'/g, '""')
-        .replace(/"(?:\\.|[^"\\])*"/g, '""');
-      const unfilled = codeNoStrings.match(/\{\{(\w+)(?:\|\|[^}]*)?\}\}/g);
-      if (unfilled?.length) {
-        log(`      ✗ JS ${bs.file}: unfilled template params: ${unfilled.join(', ')}`);
-      } else if (/ctx\.render\s*\(\s*null\s*\)/.test(code)) {
-        log(`      ✗ JS ${bs.file}: ctx.render(null) is a placeholder — implement actual content`);
-      } else if (/ctx\.sql\s*\(/.test(code) && !/ctx\.sql\.(save|runById)/.test(code)) {
-        log(`      ✗ JS ${bs.file}: ctx.sql() direct call not available — use ctx.sql.save() + ctx.sql.runById() pattern`);
+      // Use shared AST-aware validator — covers the previous ad-hoc regex
+      // checks (unfilled templates, ctx.render(null), bare ctx.sql) plus
+      // forbidden globals (fetch/eval/etc.).
+      const v = await validateRunJS(code);
+      if (!v.ok) {
+        for (const issue of v.issues) {
+          if (issue.level === 'error') log(`      ✗ JS ${bs.file}: ${issue.message}`);
+        }
       } else {
         code = ensureJsHeader(code, { desc: bs.desc, jsType: 'JSBlockModel', coll });
         code = replaceJsUids(code, allBlocksState);

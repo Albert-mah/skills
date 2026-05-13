@@ -34,6 +34,13 @@ export interface CollectionMetadata {
   toManyRelations: Map<string, Map<string, RelationKind>>;
   titleFields: Map<string, string>;
   fkColumnsByColl: Map<string, Set<string>>;
+  /**
+   * Every field name declared on the collection (user-defined + the implicit
+   * SYS_COLS). Used by spec-validator to check `assign: {...}` payloads
+   * reference real columns. Empty set means the collection wasn't found in
+   * `collections/*.yaml` — callers should treat as "skip this check".
+   */
+  fieldsByCollName: Map<string, Set<string>>;
 }
 
 export interface MetadataIssue {
@@ -51,10 +58,11 @@ export function buildCollectionMetadata(
   const toManyRelations = new Map<string, Map<string, RelationKind>>();
   const titleFields = new Map<string, string>();
   const fkColumnsByColl = new Map<string, Set<string>>();
+  const fieldsByCollName = new Map<string, Set<string>>();
 
   const collDir = path.join(projectDir, 'collections');
   if (!fs.existsSync(collDir)) {
-    return { knownColls, m2oTargets, toManyRelations, titleFields, fkColumnsByColl };
+    return { knownColls, m2oTargets, toManyRelations, titleFields, fkColumnsByColl, fieldsByCollName };
   }
 
   for (const f of fs.readdirSync(collDir).filter(f => f.endsWith('.yaml'))) {
@@ -68,10 +76,12 @@ export function buildCollectionMetadata(
       const m2oMap = new Map<string, string>();
       const toManyMap = new Map<string, RelationKind>();
       const fks = new Set<string>();
+      const fieldNames = new Set<string>(SYS_COLS);
       const fieldDefs = (c.fields || []) as Record<string, unknown>[];
 
       for (const fd of fieldDefs) {
         const fname = fd.name as string;
+        if (fname) fieldNames.add(fname);
         if (SYS_COLS.has(fname)) {
           onIssue?.({ collection: collName, field: fname, kind: 'system-column' });
         }
@@ -79,6 +89,7 @@ export function buildCollectionMetadata(
           m2oMap.set(fname, fd.target as string);
           const fk = (fd.foreignKey as string) || `${fname}Id`;
           fks.add(fk);
+          fieldNames.add(fk); // m2o auto-creates FK column — treat as known
         }
         if (fd.interface === 'o2m') toManyMap.set(fname, 'o2m');
         if (fd.interface === 'm2m') toManyMap.set(fname, 'm2m');
@@ -95,10 +106,11 @@ export function buildCollectionMetadata(
       if (m2oMap.size) m2oTargets.set(collName, m2oMap);
       if (toManyMap.size) toManyRelations.set(collName, toManyMap);
       if (fks.size) fkColumnsByColl.set(collName, fks);
+      fieldsByCollName.set(collName, fieldNames);
     } catch (e) {
       catchSwallow(e, `buildCollectionMetadata: malformed ${f} — skip, others still parsed`);
     }
   }
 
-  return { knownColls, m2oTargets, toManyRelations, titleFields, fkColumnsByColl };
+  return { knownColls, m2oTargets, toManyRelations, titleFields, fkColumnsByColl, fieldsByCollName };
 }

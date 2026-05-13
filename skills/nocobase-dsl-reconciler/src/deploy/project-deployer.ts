@@ -42,7 +42,8 @@ import { verifySqlFromPages } from './sql-verifier';
 import { discoverPages, routeKey, type RouteEntry, type PageInfo } from './page-discovery';
 import { RefResolver } from '../refs';
 import { pageToBlueprint } from './blueprint-converter';
-import { BLOCK_TYPE_TO_MODEL } from '../utils/block-types';
+import { BLOCK_TYPE_TO_MODEL, RECONCILER_JS_MODEL_USES } from '../utils/block-types';
+import { runStartupDriftChecks } from '../utils/ui-builder-bridge';
 
 export async function deployProject(
   projectDir: string,
@@ -50,6 +51,10 @@ export async function deployProject(
   log: (msg: string) => void = console.log,
 ): Promise<void> {
   const root = path.resolve(projectDir);
+
+  // One-time drift check against sibling ui-builder surface-policy (no-op if
+  // the sibling skill isn't reachable). Warn-only.
+  await runStartupDriftChecks(RECONCILER_JS_MODEL_USES, log);
 
   // ── 1. Read project structure ──
   const routesFile = path.join(root, 'routes.yaml');
@@ -150,8 +155,10 @@ export async function deployProject(
 
   // ── Spec validation (runs before connect — pure YAML checks) ──
   {
-    const { validatePageSpecs } = await import('./spec-validator');
-    const specIssues = validatePageSpecs(pages, root);
+    const { validatePageSpecs, validatePageSpecsAssignValues } = await import('./spec-validator');
+    const syncIssues = validatePageSpecs(pages, root);
+    const asyncIssues = await validatePageSpecsAssignValues(pages, root);
+    const specIssues = [...syncIssues, ...asyncIssues];
     const specErrors = specIssues.filter(i => i.level === 'error');
     const specWarnings = specIssues.filter(i => i.level === 'warn');
     if (specErrors.length) {
@@ -321,6 +328,19 @@ export async function deployProject(
       wfKeyMap = await deployWorkflows(nb, root, { log });
     } catch (e) {
       log(`  ! workflows: ${e instanceof Error ? e.message.slice(0, 100) : e}`);
+    }
+  }
+
+  // Deploy printing templates before pages so `- type: templatePrint`
+  // actions can resolve `templateName:` to a live printingTemplates row
+  // during page deploy (the plugin validates on click, not on save, so the
+  // ordering matters only for first-render correctness, not deploy success).
+  if (fs.existsSync(path.join(root, 'print-templates'))) {
+    try {
+      const { deployPrintingTemplates } = await import('../printing-templates/deployer');
+      await deployPrintingTemplates(nb, root, log);
+    } catch (e) {
+      log(`  ! print-templates: ${e instanceof Error ? e.message.slice(0, 100) : e}`);
     }
   }
 

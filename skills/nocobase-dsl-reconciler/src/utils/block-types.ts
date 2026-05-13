@@ -184,6 +184,24 @@ export const NON_COMPOSE_ACTION_TYPE_TO_MODEL: Record<string, string> = Object.f
   ACTION_REGISTRY.filter(e => !e.composable && !e.fillable).map(e => [e.type, e.model]),
 );
 
+// ─── JS model uses (kernel-aware drift detection) ───
+
+/**
+ * JS-driven FlowModel uses reconciler emits today. Cross-checked at startup
+ * against `surface-policy.RUNJS_MODEL_USES` via ui-builder-bridge — if the
+ * kernel renames one (e.g. `JSItemModel` → something else), the drift
+ * detector logs a warning so we don't silently write stale model uses.
+ *
+ * Kept narrow on purpose: only uses we currently emit, not the full kernel
+ * surface (which includes models like JSItemActionModel that DSL doesn't
+ * expose yet).
+ */
+export const RECONCILER_JS_MODEL_USES: readonly string[] = Object.freeze([
+  'JSBlockModel',
+  'JSItemModel',
+  'JSColumnModel',
+]);
+
 // ─── Legacy aliases (backward compatibility with utils/index.ts re-exports) ───
 
 // BLOCK_TYPES, MODEL_TO_TYPE, ACTION_TYPES, ACTION_MODEL_TO_TYPE

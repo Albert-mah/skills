@@ -66,6 +66,11 @@ export const DISPLAY_MODEL_MAP: Record<string, string> = {
   // Color / JSON
   color: 'DisplayColorFieldModel',
   json: 'DisplayJSONFieldModel',
+  // Source code — bundled in @nocobase/plugin-field-code (v2). Rendered with
+  // a disabled CodeEditor. If the target NB doesn't have plugin-field-code
+  // enabled the save will fail; switch to 'DisplayTextFieldModel' fallback
+  // only after confirming the plugin is missing on a per-deployment basis.
+  code: 'DisplayCodeFieldModel',
 
   // Relations — m2o/o2o/obo/oho show the target's title; o2m/m2m show count.
   m2o: 'DisplayTextFieldModel',
